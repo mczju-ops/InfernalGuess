@@ -69,6 +69,7 @@ public final class InfernalGuessCommand implements CommandExecutor, TabCompleter
                 case "difficulty" -> notYet(sender, "难度选择", "阶段 5");
                 case "leave" -> notYet(sender, "退出对局", "阶段 5");
                 case "arena" -> arena(sender, args);
+                case "mode" -> modeCmd(sender, modeArgs(args));
                 case "debug" -> debug(sender, args);
                 default -> {
                     help(sender);
@@ -431,7 +432,8 @@ public final class InfernalGuessCommand implements CommandExecutor, TabCompleter
             case "bet" -> betCmd(sender, args);
             case "battle" -> battleCmd(sender, args);
             case "round" -> roundCmd(sender, args);
-            case "mode" -> modeCmd(sender, args);
+            // ★ 2026-10-12：`mode` 已**移出** debug，改挂到顶层 `/ig mode`（对所有人开放）。
+            //   这里刻意不再保留别名 —— 用户要求的是"移出来"，不是"再开一个入口"。
             case "room" -> roomCmd(sender, args);
             case "mgcstart" -> mgcStartCmd(sender);
             case "world" -> worldCmd(sender);
@@ -1354,6 +1356,24 @@ public final class InfernalGuessCommand implements CommandExecutor, TabCompleter
      *
      * <p>覆盖只影响**之后新开/新生成**的内容（模式在开局时定格），不会改动 config.yml。
      */
+    /**
+     * 让 {@code /ig mode ...} **复用** {@code /ig debug mode ...} 的实现。
+     *
+     * <p>做法是把参数整体右移一位并补一个假前缀（{@code [ig, debug, 原 args[1..]]}），
+     * 于是 {@link #modeCmd} 里的 {@code args[2]} / {@code args[3]} 原封不动 ——
+     * <b>子树结构、分支逻辑、实现一行都不改</b>，只换了入口。
+     *
+     * <p>为什么不改 {@code modeCmd} 的下标：那要动它内部每一处 {@code args[n]}，
+     * 改面越大越容易出错（见铁律/用户裁定「大改造成更多 bug」）。
+     */
+    private static String[] modeArgs(String[] args) {
+        String[] shifted = new String[args.length + 1];
+        shifted[0] = "ig";
+        shifted[1] = "debug";
+        System.arraycopy(args, 1, shifted, 2, args.length - 1);
+        return shifted;
+    }
+
     private boolean modeCmd(CommandSender sender, String[] args) {
         GameConfig cfg = plugin.gameConfig();
 
@@ -1361,7 +1381,7 @@ public final class InfernalGuessCommand implements CommandExecutor, TabCompleter
             sender.sendMessage(Component.text("─── 本局设置（运行时覆盖）───", NamedTextColor.GOLD));
             sender.sendMessage(Component.text(cfg.describeEffective(), NamedTextColor.GRAY));
             sender.sendMessage(Component.text(
-                    "/ig debug mode funds|ultimate|config ｜ bots <数量|off|config> ｜ infernal on|off|config ｜ reset",
+                    "/ig mode funds|ultimate|config ｜ bots <数量|off|config> ｜ infernal on|off|config ｜ reset",
                     NamedTextColor.DARK_GRAY));
             return true;
         }
@@ -1379,7 +1399,7 @@ public final class InfernalGuessCommand implements CommandExecutor, TabCompleter
             }
             case "bots", "bot" -> {
                 if (value.isEmpty()) {
-                    usage(sender, "/ig debug mode bots <数量|off|config>");
+                    usage(sender, "/ig mode bots <数量|off|config>");
                     return true;
                 }
                 if (value.equals("off") || value.equals("0")) {
@@ -1401,7 +1421,7 @@ public final class InfernalGuessCommand implements CommandExecutor, TabCompleter
             // 词条总开关。`infernal` 保留为别名，兼容此前记住旧写法的使用者。
             case "affixes", "affix", "infernal" -> {
                 if (value.isEmpty()) {
-                    usage(sender, "/ig debug mode affixes <on|off|config>");
+                    usage(sender, "/ig mode affixes <on|off|config>");
                     return true;
                 }
                 switch (value) {
@@ -1418,7 +1438,7 @@ public final class InfernalGuessCommand implements CommandExecutor, TabCompleter
                         cfg.setAffixesOverride(null);
                         sender.sendMessage(ok("词条 → 恢复配置值"));
                     }
-                    default -> usage(sender, "/ig debug mode affixes <on|off|config>");
+                    default -> usage(sender, "/ig mode affixes <on|off|config>");
                 }
             }
             case "reset", "clear" -> {
@@ -1430,7 +1450,7 @@ public final class InfernalGuessCommand implements CommandExecutor, TabCompleter
                 sender.sendMessage(ok("模式 → 恢复配置值（" + cfg.mode() + "）"));
             }
             default -> usage(sender,
-                    "/ig debug mode [funds|ultimate|config] [bots <数量|off|config>] [infernal on|off|config] [reset]");
+                    "/ig mode [funds|ultimate|config] [bots <数量|off|config>] [infernal on|off|config] [reset]");
         }
         if (!what.equals("reset") && !what.equals("clear")) {
             sender.sendMessage(Component.text("当前生效：" + cfg.describeEffective(),

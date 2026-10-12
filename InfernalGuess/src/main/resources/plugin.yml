@@ -12,7 +12,7 @@ depend:
 commands:
   ig:
     description: InfernalGuess 主指令
-    usage: "/ig <menu|difficulty|leave|info|arena|debug>"
+    usage: "/ig <menu|difficulty|leave|info|mode|arena|debug>"
     aliases: [infernalguess]
 
 permissions:

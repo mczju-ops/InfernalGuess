@@ -6,7 +6,7 @@
 
     <groupId>io.mczju</groupId>
     <artifactId>InfernalGuess</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>1.0.0</version>
     <packaging>jar</packaging>
     <name>InfernalGuess</name>
     <description>斗蛐蛐 - 下注观战小游戏（MCZJUGameCore 子插件）</description>
