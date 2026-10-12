@@ -1,0 +1,395 @@
+# ============================================================
+#  display.yml · 玩家可见的一切「表面」
+#
+#  三段：
+#    messages   全部提示文本（MiniMessage 格式）
+#    icons      所有 GUI 按钮 / 状态图标（材质 / 名称 / 说明 / 发光）
+#    mob-items  每个生物的代表物品（用于下注界面里代表该怪物组）
+#
+#  占位符写成 {name}，在 MiniMessage 解析前做字符串替换。
+#  加载期会校验：必需键是否齐全、材质名是否合法；任何问题都会直接报错。
+# ============================================================
+
+messages:
+
+  prefix: "<dark_gray>[<gold>InfernalGuess<dark_gray>] <reset>"
+  no-permission: "<red>你没有权限执行此操作。"
+  players-only: "<red>该指令仅玩家可用。"
+  reload-ok: "<green>配置已重载。进行中的对局不受影响。"
+  reload-fail: "<red>配置重载失败，详见控制台。"
+  not-in-game: "<red>你当前不在对局中。"
+
+  game:
+    meta-name: "<gold>InfernalGuess"
+    meta-author: "<green>MCZJU"
+    meta-description:
+      - "<aqua>“好得不能再好了！”投资大师课"
+      - "<gray>赢赢赢还是输光光只在一念之间"
+
+  start:
+    plan-generating: "<gray>正在打扫战场……"
+    plan-timeout: "<yellow>剧本生成超时，本局终止。"
+    arena-ready: "<green>就绪！<yellow>{seconds} 秒后开始第 1 回合。"
+    funds-given: "<yellow>你的初始资金：<gold>{funds}"
+    stack-given: "<yellow>你的初始生命 <red>{life}<yellow>、护盾 <blue>{shield}"
+    item-given: "<yellow>右键<gold>下注器<yellow>可随时打开下注界面。"
+
+  end:
+    action-winner: "<gold>恭喜你，你是赢家！"
+    action-eliminated: "<red>又输光光了……"
+    winner: "<gold>🏆 {player} 以 <yellow>{funds}<gold> 资金获胜！"
+    tie-winner: "<gold>🏆 并列获胜：<yellow>{players}"
+    no-winner: "<red>本局无人胜出。"
+    final-result: "<gold>🏆 本局结束！{ranking}"
+    game-closed: "<gray>对局已结束。"
+
+  round:
+    begin: "<red>▶ 第 <white>{round}<red> / {rounds} 回合"
+    lineup: "<white>红色 <gray>{left}  <dark_gray>｜  <white>蓝色 <gray>{right}"
+    lineup-group: "<gray>{name}<dark_gray>×{count}{affix_clause}"
+    lineup-affix: " <dark_gray>[<light_purple>{affixes}<dark_gray>]"
+    weight-report: "<dark_gray>（权重 红 {left} ｜ 蓝 {right}）"
+    betting-open: "<yellow>下注开始！<white>{seconds}<yellow> 秒后开战。"
+    betting-close: "<gray>下注结束。"
+    fight: "<red>▶ 开战！"
+    juggle-reminder: "<gray>右键下注器可重新打开界面。"
+
+  bet:
+    side-chosen: "<gray>你选择了 <white>{side}<gray>，请选择金额。"
+    placed: "<yellow>已下注：<white>{side} <gray>· <white>{percent}% <gray>（本金 <white>{stake}<gray>）"
+    changed: "<yellow>已改注为：<white>{side} <gray>· <white>{percent}% <gray>（本金 <white>{stake}<gray>）"
+    watching: "<gray>你选择了观望。"
+    placed-ultimate: "<yellow>已下注：{side}（终极模式：猜错扣 1 点）"
+    canceled: "<gray>已取消下注。"
+    stake-exceeds: "<red>本金不足，请选择更小的比例。"
+    kill-line-note: "<light_purple>ALL IN 获胜额外获得斩杀线资金：<white>{line}"
+
+  battle:
+    poison-fog: "<dark_green>毒雾弥漫！场上所有生物开始凋零"
+    mob-name-left: "<red>{name}"
+    mob-name-right: "<blue>{name}"
+    roster-entry: "<gray>· <white>{amount} × {name}"
+    roster-affix: "<light_purple> [{list}]"
+    bet-left: "<red>【红】"
+    bet-right: "<blue>【蓝】"
+    bet-watch: "<light_purple>【观】"
+    revived-to-spectate: "<yellow>禁止干扰比赛进程！"
+
+  # ============================================================
+  #  词条显示名（自研词条系统）
+  #
+  #  用法：怪物头顶名牌会渲染成「词条A 词条B 生物名」，词条名就取自这里；
+  #        下注界面的阵容描述、结算日志也用它。
+  #
+  #  ★ 只有**已在 AffixRegistry 注册**的词条才有意义 ——
+  #    这里写了但代码里没实现的 id，不会出现在任何地方（而且配置里也不允许引用它）。
+  #  ⚠️ 本段是**可选**的：缺失时退回显示原始 id，不会导致启动失败。
+  # ============================================================
+  affixes:
+    # ---- 数值类（STAT）----
+    sprint: "<aqua>疾速"
+    bullwark: "<gray>壁垒"
+    plastic: "<gold>塑料"
+    # ---- 伤害拦截（WARD）----
+    "1up": "<light_purple>复生"
+    # ---- 受击反制类（PASSIVE）----
+    poisonous: "<green>剧毒"
+    withering: "<dark_gray>凋零"
+    quicksand: "<yellow>流沙"
+    lifesteal: "<red>吸血"
+    mama: "<light_purple>母体"
+    vexsummoner: "<dark_aqua>唤魔"
+    # ⚠️ MiniMessage **没有** `dark_teal` 这个具名颜色（Adventure 4.13.1 的 NamedTextColor
+    #    只有 16 个：black/dark_blue/dark_green/dark_aqua/dark_red/dark_purple/gold/gray/
+    #    dark_gray/blue/green/aqua/red/light_purple/yellow/white —— javap 实测）。
+    #    写成未知标签时 MiniMessage 会**原样输出** `<dark_teal>`，名牌上就会显示这串字。
+    #    用户要的「teal」用十六进制精确表达（rust 也是同样的写法）。
+    #    若想要原版 §3 观感，可改成 <dark_aqua>。
+    wardenwrath: "<#008080>声波"
+    # ---- 主动 / 双向 / 周期 ----
+    berserk: "<dark_red>狂暴"
+    archer: "<white>弓手"
+    firework: "<gold>烟花"
+    ghastly: "<gray>恶魂"
+    necromancer: "<dark_purple>死灵"
+    tosser: "<yellow>投掷"
+    # ---- 阶段 3（改语义 / 数值的 9 条）----
+    armoured: "<blue>披甲"
+    molten: "<gold>熔岩"
+    weakness: "<dark_gray>虚弱"
+    rust: "<#8B7355>锈蚀"
+    storm: "<yellow>雷暴"
+    webber: "<white>织网"
+    ender: "<dark_purple>末影"
+    vengeance: "<red>复仇"
+    gravity: "<light_purple>重力"
+    # ---- 升级形态（原版按等级/档位变强，本项目拆成独立词条）----
+    "armoured+": "<blue>披甲+"
+    "mama+": "<light_purple>母体+"
+
+  settle:
+    round-result: "<green>✔ <white>{side}<green> 获胜！"
+    bet-win: "<green>押{side} {percent}% → <white>赢<green>　本金 {stake} → 返还 {payout}　资金 <gold>{funds}"
+    bet-win-allin: "<green>押{side} ALL IN → <white>赢<green>　返还 {payout} <light_purple>+ 斩杀奖励 {bonus}<green>　资金 <gold>{funds}"
+    bet-lose: "<red>押{side} {percent}% → <white>输<red>　损失本金 {stake}　资金 <gold>{funds}"
+    bet-lose-allin: "<dark_red>押{side} ALL IN → <white>输<dark_red>　资金归零"
+    bet-watch: "<gray>本回合观望，资金 <gold>{funds}"
+    kill-line-hit: "<dark_red>⚠ 你的资金（{funds}）已低于斩杀线（{line}）"
+    eliminated: "<dark_red>☠ {player} 资金耗尽，出局！（仍可观战，或右键下注器退出）"
+    shield-lost: "<yellow>护盾消失！"
+    lifelost: "<dark_red>✖ {player} 猜错，失去 1 点{kind}"
+    stack-changed: "<gray>{player}：生命 {life} ｜ 护盾 {shield}"
+
+  menu:
+    betting-title-side: "下注 · 选择阵营"
+    betting-title-amount: "下注 · 选择金额"
+    item-name: "<gold>下注器"
+    item-lore:
+      - "<gray>右键打开下注界面"
+      - "<dark_gray>关闭后仍可重新打开"
+    drop-denied: "<red>对局中不能丢弃该道具。"
+    container-denied: "<red>对局中不能将该道具放入容器。"
+    betting-closed: "<gray>当前不是下注阶段。"
+    eliminated: "<gray>你已出局，本局只能观战。"
+    exit-title: "退出对局"
+
+  difficulty:
+    current: "<aqua>当前难度：<yellow>{difficulty}"
+    set-by-you: "<green>你已将本局难度设为 <yellow>{difficulty}"
+    broadcast: "<yellow>{player} 将本局难度设为 <white>{difficulty}"
+    not-waiting: "<red>只能在开局前的等待阶段修改难度。"
+    unknown: "<red>未知难度：{value}（可选 normal | hard | expert）"
+
+  debug:
+    arena-created: "<green>已创建竞技场 <yellow>{name}<green>"
+    arena-deleted: "<green>已删除竞技场 <yellow>{name}"
+    arena-renamed: "<green>已将 <yellow>{old}<green> 重命名为 <yellow>{new}"
+    arena-selected: "<green>当前编辑竞技场：<yellow>{name}"
+    arena-list: "<yellow>竞技场列表：<white>{names}"
+    arena-missing: "<red>竞技场不存在：<yellow>{name}"
+    arena-name-used: "<red>竞技场名已存在：<yellow>{name}"
+    spawn-set: "<green>{kind} 已设为 <white>{loc}"
+    point-set: "<green>已绑定 <white>{side} 侧 <white>{point} 号刷怪点 → <white>{loc}"
+    summon-ok: "<green>已在 <white>{point}<green> 号点位加入 <yellow>{group}<green>（词条：<white>{affixes}<green>）"
+    summon-none: "<gray>{point} 号点位已清空。"
+    summon-current: "<yellow>{point} 号点位当前：<white>{groups}"
+    skip-ok: "<green>已跳过当前轮次。"
+    set-ok: "<green>已将 {player} 的 {field} 设为 <yellow>{value}"
+    info: "<gray>回合 <white>{round}<gray>｜阶段 <white>{phase}<gray>｜存活 红{left} / 蓝{right}"
+    no-game: "<red>当前没有进行中的对局。"
+
+  scoreboard:
+    title: "<gold>InfernalGuess"
+    line-round: "<white>第 {round} / {rounds} 回合"
+    line-killline: "<dark_red>斩杀线 {line}"
+    separator: "<dark_gray>─────────────"
+    funds-row: "<gray>#{rank} <white>{player} <gray>{side}{percent} <gold>{funds}"
+    funds-row-out: "<dark_gray>#{rank} {player} 已出局"
+    life-row: "<gray>#{rank} <white>{player} <gray>{side}{percent} <red>{hearts} <aqua>{shields}"
+    side-left: "<red>红"
+    side-right: "<blue>蓝"
+    side-watch: "<gray>观"
+    side-none: "<dark_gray>—"
+    percent: "<gray>{value}%"
+    heart-full: "<red>♥"
+    heart-empty: "<dark_gray>♡"
+    shield-full: "<aqua>✚"
+    shield-empty: "<dark_gray>✚"
+
+  broadcast:
+    round-start: "<gray>──── <white>第 {round} 回合 <gray>────"
+    settle-done: "<gray>本回合结算完毕。"
+    victory: "<gold>🏆 本局结束"
+
+# ============================================================
+
+icons:
+
+  side:
+    left:
+      material: RED_CONCRETE
+      name: "<red>显然是这边更厉害"
+      lore:
+        - "<gray>本回合投注红色阵容"
+        - "<dark_gray>点击后选择金额"
+      glow: false
+    right:
+      material: BLUE_CONCRETE
+      name: "<blue>我觉得这边更强"
+      lore:
+        - "<gray>本回合投注蓝色阵容"
+        - "<dark_gray>点击后选择金额"
+      glow: false
+    watch:
+      material: PURPLE_CONCRETE
+      name: "<gray>观望"
+      lore:
+        - "<gray>本回合不下注"
+        - "<dark_gray>先见之明了"
+      glow: false
+
+  amount:
+    percent-25:
+      material: LIME_CONCRETE
+      name: "<green>下注25%本金"
+      lore:
+        - "<gray>本金：<white>{stake}"
+        - "<gray>获胜后资金：<green>{win}"
+    percent-50:
+      material: YELLOW_CONCRETE
+      name: "<yellow>下注50%本金"
+      lore:
+        - "<gray>本金：<white>{stake}"
+        - "<gray>获胜后资金：<green>{win}"
+    all-in:
+      material: RED_CONCRETE
+      name: "<dark_red>ALL！"
+      lore:
+        - "<gray>本金：<white>{stake} <dark_gray>（全部资金）"
+        - "<gray>获胜后资金：<green>{win}"
+        - "<light_purple>额外获得斩杀线资金：<white>{line}"
+    back:
+      material: ARROW
+      name: "<gray>返回选边"
+      lore: []
+
+  common:
+    info:
+      material: BOOK
+      name: "<aqua>本回合信息"
+      lore:
+        - "<gray>红色：<white>{left}"
+        - "<gray>蓝色：<white>{right}"
+        - "<gray>红色权重：<white>{left_weight}"
+        - "<gray>蓝色权重：<white>{right_weight}"
+    funds:
+      material: GOLD_INGOT
+      name: "<gold>你的资金：{funds}"
+      lore:
+        - "<gray>当前斩杀线：<white>{line}"
+    filler:
+      material: GRAY_STAINED_GLASS_PANE
+      name: " "
+      lore: []
+    stack:
+      material: NETHER_STAR
+      name: "<red>生命 {life} <blue>护盾 {shield}"
+      lore:
+        - "<gray>终极模式：生死决斗"
+        - "<gray>猜错扣 1 点，<red>优先扣护盾"
+        - "<gray>护盾第 {shield_until} 回合起失效"
+
+  menu:
+    bet-item:
+      material: CLOCK
+      name: "<gold>下注器"
+      lore: []
+      glow: true
+
+  debug:
+    set-player-spawn:
+      material: ENDER_PEARL
+      name: "<green>设置玩家传送点"
+      lore:
+        - "<gray>使用你当前的位置"
+    set-spectate-spawn:
+      material: ENDER_EYE
+      name: "<green>设置观战席"
+      lore:
+        - "<gray>使用你当前的位置"
+    bind-left-point:
+      material: RED_BED
+      name: "<red>绑定红刷怪点 {n}"
+      lore:
+        - "<gray>使用你当前的位置"
+    bind-right-point:
+      material: BLUE_BED
+      name: "<blue>绑定蓝色刷怪点 {n}"
+      lore:
+        - "<gray>使用你当前的位置"
+    delete-arena:
+      material: TNT
+      name: "<dark_red>删除此竞技场"
+      lore:
+        - "<red>不可撤销！"
+    save:
+      material: EMERALD_BLOCK
+      name: "<green>保存"
+      lore: []
+    cancel:
+      material: REDSTONE_BLOCK
+      name: "<red>取消"
+      lore: []
+
+# ============================================================
+#  生物代表物品：用于下注界面里代表某个怪物组
+#  默认策略：头颅 → 标志性掉落物 → 强关联物
+#  兜底链：本表 → 代码内置默认 → STONE
+# ============================================================
+
+mob-items:
+  # 有头颅的优先用头颅
+  zombie:           ZOMBIE_HEAD
+  skeleton:         SKELETON_SKULL
+  wither_skeleton:  WITHER_SKELETON_SKULL
+  creeper:             CREEPER_HEAD
+  # 无头颅 → 标志性掉落物 / 强关联物
+  husk:                ROTTEN_FLESH
+  zombie_villager:     ROTTEN_FLESH
+  drowned:             ROTTEN_FLESH
+  drowned_trident:     TRIDENT
+  stray:               ARROW
+  bogged:              ARROW
+  parched:             ARROW
+  spider:              SPIDER_EYE
+  cave_spider:         FERMENTED_SPIDER_EYE
+  silverfish:          STONE
+  endermite:           ENDER_PEARL
+  enderman:            ENDER_PEARL
+  blaze:               BLAZE_ROD
+  slime:               SLIME_BALL
+  magma_cube:          MAGMA_CREAM
+  witch:               REDSTONE
+  pillager:            CROSSBOW
+  vindicator:          IRON_AXE
+  evoker:              TOTEM_OF_UNDYING
+  illusioner:          BOW
+  ravager:             SADDLE
+  vex:                 IRON_SWORD
+  phantom:             PHANTOM_MEMBRANE
+  guardian:            PRISMARINE_SHARD
+  shulker:             SHULKER_SHELL
+  wolf:                BONE
+  polar_bear:          COD
+  iron_golem:          POPPY
+  zombified_piglin:    GOLDEN_SWORD
+  bee:                 HONEYCOMB
+  goat:                GOAT_HORN
+  llama:               HAY_BLOCK
+  panda:               BAMBOO
+  fox:                 SWEET_BERRIES
+  turtle:              SEAGRASS
+  trader_llama:        LEAD
+  hoglin:              PORKCHOP
+  zoglin:              CRIMSON_FUNGUS
+  axolotl:             AXOLOTL_BUCKET
+  pufferfish:          PUFFERFISH
+  # ---- ★ 2026-10-12 新增：重磅选手 ----
+  wither:              WITHER_SKELETON_SKULL
+  warden:              SCULK_SHRIEKER
+  # ---- ★ 2026-10-12 新增：变种 ----
+  zombie_spear:        IRON_SPEAR
+  white_fox_sword:     DIAMOND_SWORD
+  zombified_piglin_spear: GOLDEN_SPEAR
+  lightning_creeper:   FIREWORK_ROCKET
+
+  # ---- ★ 骑乘组合（阶段 4）：下注界面里代表该组合的物品 ----
+  #      组合的**显示名**来自 mob-groups.yml 的 name:（如「沙漠骑兵小队」），
+  #      这里只负责 GUI 图标。缺省的组会走 fallback，不会报错。
+  chicken_jockey:    EGG
+  spider_jockey:     SPIDER_EYE
+  skeleton_horseman: BONE
+  zombie_horseman:   ROTTEN_FLESH
+  desert_cavalry:    SAND
+  evoker_knight:     TOTEM_OF_UNDYING
+  strider_jockey:    WARPED_FUNGUS_ON_A_STICK

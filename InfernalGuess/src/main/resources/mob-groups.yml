@@ -1,0 +1,514 @@
+# ============================================================
+#  mob-groups.yml · 怪物组
+#
+#  键名 = **原版实体 id**（小写，与 Registry.ENTITY_TYPE 一致）。
+#  加载期会校验：实体 id / 材质名只要有一个非法就拒绝启动。
+#
+#  ── 字段 ──────────────────────────────────────────────────
+#    name        显示在下注界面与生物名牌上的名字
+#    weight      单只权重（组权重 = weight × 数量）
+#    amount      **可省略**。数量不再由配置决定，见下面的「★ 数量怎么来的」
+#    equipment   装备槽位：head/chest/legs/feet/hand/off_hand
+#                生成时会**先清空原版随机装备**再按这里穿戴
+#
+#  ── ★ 数量怎么来的（2026-10-11 重写）──────────────────────
+#    每个回合有一个标准：config.yml 的 weight-by-round（本回合该凑多少权重）。
+#    生成时随机从**所有怪物组**里抽 3 种（同一侧不重复），
+#    再按「回合目标 ÷ 单只权重」算出每种出几只（**可以是 0 只**），使总权重达到标准。
+#    于是：
+#      · 想调难度 → 调 config.yml 的 weight-by-round 或这里的 weight，
+#        **不要**再写数量区间（两者同量纲）
+#      · amount.min **已废弃** —— 写了会被忽略，启动时会提示你删掉
+#      · 单个组默认最多 32 只；只有需要压制实体数时才写 `amount: { max: N }`，
+#        例如骑乘组合（一只 = 载具 + 乘客），目前它们统一写 max: 2
+#      · 权重 < 1 的组（蠹虫 / 末影螨 / 海龟 / 僵尸马）数量下限 5 ——
+#        否则它们在场上几乎看不见；下限会把整方顶过头时自动放宽（达标优先）
+#
+#  ── ⛔ infernal_affixes（逐组词条清单）已废弃（2026-10-12）────
+#    ⚠️ **不要再往这里写词条**。写了会被**完全忽略**（启动时打一条告警）。
+#    现在的规则：**每种生物都能从全局词条池（28 条）里抽到绝大多数词条**，
+#    只有少数词条带附加限制 —— 例如只有两种蜘蛛能抽到织网、
+#    只有近战生物能抽到狂暴/疾速、只有拥有幼体的生物能抽到母体、
+#    只有盔甲会被看见的生物能抽到披甲。
+#    分级与限制定义在 io.mczju.infernalguess.affix.AffixCatalog（代码，不是配置）。
+#
+#  ── 权重设计（与 config.yml 的 weight-by-round 同量纲）────
+#    ⚠️ 这些数值**必须等于实际战力** —— 并由 ShippedConfigTest 的可达性探测钉住
+#       （逐回合枚举权重三元组，要求「最合适的三种怪」能落在 weight-tolerance 以内）。
+#    2026-10-12 用户裁定的标尺（以**僵尸 = 1** 为基准）：
+#      0.5     极弱 / 无输出但能扛（蠹虫、末影螨、海龟、僵尸马）
+#      0.8     打不过僵尸（红狐狸、狼、山羊、史莱姆、岩浆怪、硫方怪、
+#              羊驼、蜜蜂、河豚）
+#      1.0     杂兵基准（**全部僵尸变种**、骷髅变种、蜘蛛、洞穴蜘蛛、掠夺者、
+#              美西螈、空手溺尸）
+#      1.0     杂兵基准（**全部僵尸变种 + 全部骷髅变种**、蜘蛛、洞穴蜘蛛、
+#              掠夺者、美西螈、空手溺尸）
+#              ★ 骷髅变种与僵尸同档是**用户裁定**：「远程怪虽然脆，但是会射偏，
+#                射击中移速也不如僵尸，实际输出没有你想象的那么强，设为 1」
+#      2.0     强化（苦力怕、幻翼、烈焰人、守卫者、恼鬼、幻术师、潜影贝、
+#              疣猪兽、僵尸疣猪兽、熊猫、北极熊、持矛僵尸、持剑白狐狸、
+#              僵尸猪灵、持金矛僵尸猪灵）
+#      3.0     持械高伤（凋灵骷髅、卫道士、三叉戟溺尸、末影人）
+#      4.0     女巫（能自我治疗，功能性极强）；闪电苦力怕
+#      5.0     劫掠兽     6.0  铁傀儡 / 唤魔者（能召唤恼鬼）
+#      10 / 15 凋零 / 监守者（重磅选手，只在最后几回合够得着）
+#    骑乘组合 = **各部件权重之和**（被动坐骑算 0.5），用户逐条校准过：
+#      鸡骑士 1.5、蜘蛛骑士 2.0、骷髅马骑士 2.0、僵尸马骑士 2.0
+#      （「有矛且速度快至少值 2」）、沙漠骑兵小队 3.0、
+#      炽足兽骑士 2.5（「僵尸猪灵是 2，所以顶多 2.5」）、唤魔者骑士 11.0
+#
+#  ── ★ 收录口径（2026-10-12 收口）──────────────────────────
+#    只收**真能在竞技场里造成伤害**的生物。判据是实测反编译 26.2 服务端得到的
+#    「有 ATTACK_DAMAGE 属性 + 有通用攻击 goal」，或有独立伤害机制。
+#    ⚠️ 本项目会用 EnemyTargetGoal **强制指定目标**（removeAllGoals(TARGET)），
+#       所以「原版只打特定猎物」不构成障碍 —— 猫/狐狸/美西螈被强制索敌后真会打。
+#    ⚠️ 例外（用户裁定，明知 0 输出仍收录）：
+#      海龟 —— 「只要站在那就可以启动抗伤嘲讽的定位，不需要补强」
+#    实测**输出为 0、因此刻意不收录**的（详见 docs/12 与 dev-log 065）：
+#      骆驼 / 骆驼尸壳单体（registerGoals() 为空、无 ATTACK_DAMAGE）
+#      硫方怪（isDealsDamage() 恒 false、targeting goal 为空；
+#              它唯一有意义的伤害是「吞下岩浆块后反伤」，而**无法直接召唤
+#              一个内部已有岩浆块的个体** ⇒ 按用户裁定直接删去）
+#      僵尸马单体（无 ATTACK_DAMAGE，只作为僵尸马骑士的坐骑出现）
+#      悦灵 / 铜傀儡 / 鹦鹉 / 嗅探兽（无攻击 goal）
+#      雪傀儡（雪球只对烈焰人 3 伤，其余 0）
+#      鳕鱼 / 鲑鱼 / 热带鱼 / 蝌蚪 / 鱿鱼 / 发光鱿鱼 / 蝙蝠（无 ATTACK_DAMAGE）
+#      村民 / 流浪商人 / 马 / 驴 / 骡 / 猪 / 牛 / 羊 / 鸡（无攻击能力）
+#    刻意不收录（保留原有决定）：
+#      ghast      索敌 bug（用户裁定暂时移出；实测其实无 ATTACK_DAMAGE，只靠火球）
+#      ender_dragon / wither 以外的 boss、creaking（不摧毁心脏杀不死）
+#      giant      未确认用户是否要（26.2 仍存在、有 15 点伤害），暂不收录
+#
+#  ── 三类需要注意的生物 ────────────────────────────────────
+#  ★ brain 型（猪灵 / 猪灵蛮兵 / 疣猪兽 / 僵尸疣猪兽 / 监守者）
+#    它们没有 goal selector，不能用 Paper 的 Mob Goal API 挂索敌。
+#    代码里会自动降级为 setTarget 并由 5 tick 心跳**反复重申**，所以可以正常参战。
+#  ★ 猪灵在主世界会变成僵尸猪灵
+#    Paper 没有关掉它的世界配置；代码里用 EntityTransformEvent **在插件侧取消**，
+#    只影响参战生物，不动服务器配置。
+#  ★ 凋零会破坏方块、且**持续回血 1 HP/s**
+#    config.yml 的 world.gamerules.mobGriefing = false 已关掉拆方块（加载时写入世界）；
+#    回血由 30 秒后的毒雾（凋零 V = 10 HP/s）压制，因此不会拖成无解拉锯。
+# ============================================================
+
+mob_groups:
+
+  # ==================== 极弱 / 无输出但能扛 ====================
+
+  silverfish:
+    name: "蠹虫"
+    weight: 0.5
+    equipment: {}
+
+  endermite:
+    name: "末影螨"
+    weight: 0.5
+    equipment: {}
+
+  turtle:
+    name: "乌龟"
+    weight: 0.5
+    equipment: {}
+
+  # ★ 单体僵尸马：无 ATTACK_DAMAGE（0 输出），只作为「被动坐骑」出现在
+  #   僵尸马骑士组合里 —— 因此**不再单列为一个组**（单列等于往池子里塞活靶）。
+
+  # ==================== 打不过僵尸（< 1）====================
+
+  fox:
+    name: "狐狸（针叶林的样子）"
+    weight: 0.8
+    equipment: {}
+
+  wolf:
+    name: "狼"
+    weight: 0.8
+    equipment: {}
+
+  goat:
+    name: "尖叫的山羊"
+    weight: 0.8
+    equipment: {}
+
+  slime:
+    name: "史莱姆"
+    weight: 0.8
+    equipment: {}
+
+  magma_cube:
+    name: "岩浆怪"
+    weight: 0.8
+    equipment: {}
+
+  llama:
+    name: "羊驼"
+    weight: 0.8
+    equipment: {}
+
+  trader_llama:
+    name: "商队羊驼"
+    weight: 0.8
+    equipment: {}
+
+  bee:
+    name: "蜜蜂"
+    weight: 0.8
+    equipment: {}
+
+  pufferfish:
+    name: "河豚"
+    weight: 0.8
+    equipment: {}
+
+  cave_spider:
+    name: "洞穴蜘蛛"
+    weight: 0.8
+    equipment: {}
+
+  # ==================== 杂兵基准（1.0）====================
+  # ★ 用户裁定：**所有僵尸变种 = 1 权重** 作为整张表的基准。
+  # ★ 同档还包含**全部骷髅变种**（骷髅 / 流浪者 / 沼骸 / 焦骸）——
+  #   用户原话：「远程怪虽然脆，但是会射偏，射击中移速也不如僵尸，
+  #   实际输出没有你想象的那么强，设为 1」。
+
+  zombie:
+    name: "僵尸"
+    weight: 1.0
+    equipment: {}
+
+  husk:
+    name: "尸壳"
+    weight: 1.0
+    equipment: {}
+
+  zombie_villager:
+    name: "僵尸村民"
+    weight: 1.0
+    equipment: {}
+
+  # ★ 溺尸：**原版 id 给「空手」形态**（用户裁定）。
+  #   理由：本插件生成时会**清空六个装备槽**再按配置穿戴，
+  #   而这里刻意不写 equipment ⇒ 它出生即空手。
+  drowned:
+    name: "溺尸"
+    weight: 1.0
+    equipment: {}
+
+  # ★ 变种：三叉戟溺尸 —— 走 combo 分支并**显式给三叉戟**。
+  #   为什么用 combo 而不是普通 entry：combo 的部件在穿戴前同样会清空槽位
+  #   （见 BattleService.applyEquipment 的 setItemInMainHand(null)），
+  #   所以「给主手三叉戟」正好顶掉原版随机装备，得到确定的三叉戟形态。
+  drowned_trident:
+    name: "三叉戟溺尸"
+    weight: 3.0
+    combo:
+      mount:
+        type: DROWNED
+        equipment: { mainhand: minecraft:trident }
+
+  spider:
+    name: "蜘蛛"
+    weight: 1.0
+    equipment: {}
+
+  pillager:
+    name: "掠夺者"
+    weight: 1.0
+    equipment:
+      hand: minecraft:crossbow
+
+  axolotl:
+    name: "美西螈"
+    weight: 1.0
+    equipment: {}
+
+  # ==================== 骷髅变种（1.0）====================
+  # ★ 与僵尸同档（用户裁定，理由见上）。四个都是 `AbstractSkeleton` + 弓。
+
+  skeleton:
+    name: "骷髅"
+    weight: 1.0
+    equipment:
+      hand: minecraft:bow
+
+  stray:
+    name: "流浪者"
+    weight: 1.0
+    equipment:
+      hand: minecraft:bow
+
+  bogged:
+    name: "沼骸"
+    weight: 1.0
+    equipment:
+      hand: minecraft:bow
+
+  # ★ 焦骸（26.2 新增）：extends AbstractSkeleton，持弓，
+  #   实测它的箭额外附带 30 秒虚弱（Weakness 600 ticks）。
+  parched:
+    name: "焦骸"
+    weight: 1.0
+    equipment:
+      hand: minecraft:bow
+
+  # ==================== 强化（2.0）====================
+
+  creeper:
+    name: "苦力怕"
+    weight: 2.0
+    equipment: {}
+
+  # ★ 变种：闪电苦力怕（充能）—— 爆炸威力约为普通苦力怕的两倍
+  #   ⚠️ 变种**没有自己的原版实体 id**，所以组键可以自取名字，
+  #      但必须用 `type:` 显式写出基础实体（写了 variant 却不写 type 会拒绝启动）。
+  lightning_creeper:
+    name: "闪电苦力怕"
+    type: CREEPER
+    weight: 4.0
+    variant: { charged: true }
+
+  phantom:
+    name: "幻翼"
+    weight: 2.0
+    equipment: {}
+
+  blaze:
+    name: "烈焰人"
+    weight: 2.0
+    equipment: {}
+
+  guardian:
+    name: "守卫者"
+    weight: 2.0
+    equipment: {}
+
+  vex:
+    name: "恼鬼"
+    weight: 2.0
+    equipment:
+      hand: minecraft:iron_sword
+
+  illusioner:
+    name: "幻术师"
+    weight: 2.0
+    equipment:
+      hand: minecraft:bow
+
+  shulker:
+    name: "潜影贝"
+    weight: 2.0
+    equipment: {}
+
+  hoglin:
+    name: "疣猪兽"
+    weight: 2.0
+    equipment: {}
+
+  zoglin:
+    name: "僵尸疣猪兽"
+    weight: 2.0
+    equipment: {}
+
+  panda:
+    name: "熊猫"
+    weight: 2.0
+    equipment: {}
+
+  polar_bear:
+    name: "北极熊"
+    weight: 2.0
+    equipment: {}
+
+  # ★ 变种：持矛的僵尸（26.2 新的长矛武器）
+  zombie_spear:
+    name: "持矛僵尸"
+    weight: 2.0
+    combo:
+      mount:
+        type: ZOMBIE
+        equipment: { mainhand: minecraft:iron_spear }
+
+  # ★ 变种：持剑白狐狸（毛色白 + 钻石剑）
+  white_fox_sword:
+    name: "狐狸（雪原的样子）"
+    type: FOX
+    weight: 2.0
+    variant: { fox_type: SNOW }
+    equipment:
+      hand: minecraft:diamond_sword
+
+  zombified_piglin:
+    name: "僵尸猪灵"
+    weight: 2.0
+    equipment:
+      hand: minecraft:golden_sword
+
+  # ★ 变种：持金矛的僵尸猪灵
+  zombified_piglin_spear:
+    name: "持矛僵尸猪灵"
+    weight: 2.0
+    combo:
+      mount:
+        type: ZOMBIFIED_PIGLIN
+        equipment: { mainhand: minecraft:golden_spear }
+
+  # ==================== 持械高伤（3.0+）====================
+
+  wither_skeleton:
+    name: "凋灵骷髅"
+    weight: 3.0
+    equipment:
+      hand: minecraft:stone_sword
+
+  # ★ 溺尸的两种形态见上文「杂兵基准」段：
+  #   `drowned`（空手）与 `drowned_trident`（三叉戟，走 combo 显式给装备）。
+
+  vindicator:
+    name: "卫道士"
+    weight: 3.0
+    equipment:
+      hand: minecraft:iron_axe
+
+  enderman:
+    name: "末影人"
+    weight: 3.0
+    equipment: {}
+
+  evoker:
+    name: "唤魔者"
+    weight: 6.0
+    equipment: {}
+
+  iron_golem:
+    name: "铁傀儡"
+    weight: 6.0
+    equipment: {}
+
+  ravager:
+    name: "劫掠兽"
+    weight: 5.0
+    equipment: {}
+
+  witch:
+    name: "女巫"
+    weight: 4.0
+    equipment: {}
+
+  # ==================== 重磅：只在最后几回合够得着 ====================
+
+  wither:
+    name: "凋零"
+    weight: 10.0
+    equipment: {}
+
+  warden:
+    name: "监守者"
+    weight: 15.0
+    equipment: {}
+
+  # ============================================================
+  #  ★ 骑乘组合 与 单部件变种（阶段 4 + 2026-10-12 扩充）
+  #
+  #  一个组合 = 一只载具 + 若干乘客，**每个部分都算一条命**
+  #  （用户裁定：即使只剩坐骑活下来，它也会因为孱弱的血量
+  #    迅速死于 30 秒后的毒雾 —— 所以不必为落单坐骑单列规则）。
+  #
+  #  ★ 权重按**各部件之和**定价（被动坐骑算 0.5）。
+  #  ★ 载具由 MountDriveGoal 自己追敌 —— 否则整组是「站着不动的活靶」。
+  #  ★ type 填**载具**的类型（组合以载具为主，也用于展示图标）。
+  #
+  #  ── ★ 单部件组合 = 「变种」────────────────────────────────
+  #  有些变种（空手溺尸 / 三叉戟溺尸 / 持矛僵尸）**没有自己的原版实体 id**，
+  #  而加载器要求「组键 = 原版实体 id」除非有 combo 段。
+  #  于是用「**只有一个载具、没有乘客**」的 combo 来表达它 ——
+  #  复用既有 schema，不必新增「变种」概念。
+  #  ⚠️ 但要注意：combo 的载具会走 spawnCombo 分支，
+  #     它**不会**自动清空原版随机装备（那是 applyMobSetup 做的），
+  #     所以单部件变种目前只保证「类型 + 名牌」正确。
+  #     需要精确控制装备时，请用带 equipment 的乘客形式，或等变种字段接入生成链。
+  # ============================================================
+
+  chicken_jockey:
+    name: "鸡骑士"
+    weight: 1.5
+    amount: { max: 2 }        # ★ 骑乘组合：一只 = 载具 + 乘客，压制实体数上限
+    combo:
+      mount: { type: CHICKEN }
+      riders:
+        r1: { type: ZOMBIE, baby: true }
+
+  zombie_horseman:
+    name: "僵尸马骑士"
+    weight: 2.0
+    amount: { max: 2 }        # ★ 骑乘组合：一只 = 载具 + 乘客，压制实体数上限
+    combo:
+      mount: { type: ZOMBIE_HORSE }
+      riders:
+        r1:
+          type: ZOMBIE
+          equipment: { mainhand: minecraft:iron_spear }
+
+  spider_jockey:
+    name: "蜘蛛骑士"
+    weight: 2.0
+    amount: { max: 2 }        # ★ 骑乘组合：一只 = 载具 + 乘客，压制实体数上限
+    combo:
+      mount: { type: SPIDER }
+      riders:
+        # ⚠️ 乘客必须**显式写出武器**：生成时我们会先清空 6 个装备槽
+        #    （用户第 7 条：清掉原版随机盔甲），所以原版骷髅自带的弓会被清掉、
+        #    配置里不补就是**空手**。实测反馈：蜘蛛骑士的骷髅没有弓。
+        r1:
+          type: SKELETON
+          equipment: { mainhand: minecraft:bow }
+
+  skeleton_horseman:
+    name: "骷髅马骑士"
+    weight: 2.0
+    amount: { max: 2 }        # ★ 骑乘组合：一只 = 载具 + 乘客，压制实体数上限
+    combo:
+      mount: { type: SKELETON_HORSE }
+      riders:
+        r1:
+          type: SKELETON
+          equipment:
+            head: minecraft:iron_helmet
+            mainhand: minecraft:iron_sword
+          enchantments:
+            head: "unbreaking:3"
+
+  desert_cavalry:
+    name: "沙漠骑兵小队"
+    weight: 3.0
+    amount: { max: 2 }        # ★ 骑乘组合：一只 = 载具 + 乘客，压制实体数上限
+    combo:
+      mount: { type: CAMEL_HUSK }
+      riders:
+        r1:
+          type: HUSK
+          equipment: { mainhand: minecraft:golden_spear }
+        r2:
+          type: PARCHED
+          equipment: { mainhand: minecraft:bow }
+
+  strider_jockey:
+    name: "炽足兽骑士"
+    weight: 2.5
+    amount: { max: 2 }        # ★ 骑乘组合：一只 = 载具 + 乘客，压制实体数上限
+    combo:
+      mount: { type: STRIDER }
+      riders:
+        # ⚠️ 同上：僵尸猪灵原版自带金剑，被清空后必须在这里补回来
+        #    （实测反馈：炽足兽骑士的僵尸猪灵没有金剑）。
+        r1:
+          type: ZOMBIFIED_PIGLIN
+          equipment: { mainhand: minecraft:golden_sword }
+
+  evoker_knight:
+    name: "唤魔者骑士"
+    weight: 11.0
+    amount: { max: 2 }        # ★ 骑乘组合：一只 = 载具 + 乘客，压制实体数上限
+    combo:
+      mount: { type: RAVAGER }
+      riders:
+        r1: { type: EVOKER }

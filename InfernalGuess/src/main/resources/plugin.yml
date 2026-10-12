@@ -1,0 +1,24 @@
+name: InfernalGuess
+version: '${project.version}'
+main: io.mczju.infernalguess.InfernalGuessPlugin
+api-version: '26.2'
+description: 斗蛐蛐 - 下注观战小游戏（MCZJUGameCore 子插件）
+author: MCZJU
+depend:
+  - MCZJUGameCore
+# 2026-10-11：已移除 softdepend: [InfernalMobs]。
+# 本插件不再依赖炒鸡 API，词条系统将来由自研实现接管（见 docs/05 的 Q54/Q55）。
+
+commands:
+  ig:
+    description: InfernalGuess 主指令
+    usage: "/ig <menu|difficulty|leave|info|arena|debug>"
+    aliases: [infernalguess]
+
+permissions:
+  infernalguess.play:
+    description: 玩家指令（菜单 / 难度 / 退出 / 信息）
+    default: true
+  infernalguess.admin:
+    description: 管理员调试指令（竞技场管理与 debug）
+    default: op

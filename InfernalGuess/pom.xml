@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>io.mczju</groupId>
+    <artifactId>InfernalGuess</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+    <name>InfernalGuess</name>
+    <description>斗蛐蛐 - 下注观战小游戏（MCZJUGameCore 子插件）</description>
+
+    <properties>
+        <java.version>25</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- 与测试服 E:\MCpaper 实际运行版本一致（2026-10-11 实测 26.2.build.133-stable） -->
+        <paper.version>26.2.build.133-stable</paper.version>
+        <!-- MCZJUGameCore：最新稳定版，JitPack 实测可解析 -->
+        <mgc.version>1.1.2</mgc.version>
+        <!--
+          炒鸡（InfernalMobs）API 依赖**已移除**（2026-10-11）。
+          原因见 dev-log/028：该 API 的词条目标类型被本体写死为 Player，
+          37 个词条里只有 6 个在「怪打怪」场景下生效；且我们不是插件所属者，无法改动本体。
+          → 玩法上不再依赖炒鸡，将来由自研词条系统接管（详见 docs/05 的 Q54/Q55）。
+        -->
+    </properties>
+
+    <repositories>
+        <repository>
+            <id>papermc</id>
+            <url>https://repo.papermc.io/repository/maven-public/</url>
+        </repository>
+        <repository>
+            <id>jitpack.io</id>
+            <url>https://jitpack.io</url>
+        </repository>
+    </repositories>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.papermc.paper</groupId>
+            <artifactId>paper-api</artifactId>
+            <version>${paper.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.github.mczju-ops</groupId>
+            <artifactId>MCZJUGameCore</artifactId>
+            <version>${mgc.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.10.2</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>InfernalGuess-${project.version}</finalName>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+            </resource>
+        </resources>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <release>${java.version}</release>
+                    <encoding>UTF-8</encoding>
+                    <!-- JDK 25 下 plexus-compiler 进程内编译(javax.tools)会抛
+                         ConcurrentModificationException，须 fork 出进程 javac 编译。
+                         （经验来自炒鸡本体 MCZJUInfernalMobs 的 pom.xml） -->
+                    <fork>true</fork>
+                    <compilerArgs>
+                        <arg>-Xlint:-removal</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.2.5</version>
+            </plugin>
+        </plugins>
+    </build>
+</project>

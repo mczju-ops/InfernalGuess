@@ -1,0 +1,118 @@
+# ============================================================
+#  InfernalGuess · 主配置
+#
+#  其他文件：
+#    display.yml      玩家可见文案 + GUI 图标 + 生物代表物品
+#    mob-groups.yml   怪物组（键名 = 原版实体 id）—— 所有组同属**一个大池**
+#    arenas.yml       竞技场与点位（由 /ig arena 调试指令写入，无需手改）
+#
+#  ★ 已废弃：wave-pools.yml（2026-10-11 重写）
+#    现在随机从「所有怪物组」里抽 3 种，再按权重决定每种的数量（可为 0），
+#    使总权重达到本回合的 weight-by-round —— 不再有出生点/回合区间的池子配置。
+#
+#  加载期会校验每一个键：缺失/类型错误/长度不符都会直接报错并指出键路径。
+# ============================================================
+
+# ---------------- 对局 ----------------
+initial-funds: 10000              # 每人初始资金
+max-players: 10                   # 单局最大人数
+min-players: 1                    # 单局最小人数
+rounds: 10                        # 回合数
+betting-countdown-seconds: 30     # 下注倒计时（秒）
+bet-ratios: [0.25, 0.5, 1.0]      # 25% / 50% / ALL IN
+rounding: FLOOR                   # 下注金额取整：FLOOR | ROUND | CEIL
+
+# ---------------- 数值表（索引 = 回合数 - 1，必须与 rounds 等长）----------------
+weight-by-round:    [3, 5, 7, 8, 10, 12, 15, 18, 21, 25]
+kill-line-by-round: [0, 0, 0, 0, 0, 10000, 20000, 40000, 100000, 200000]
+weight-tolerance: 0.02            # 每方总权重相对本回合目标的容差（±2%，只告警不失败）
+weight-rounding: ROUND            # 组权重取整：FLOOR | ROUND | CEIL（四舍五入）
+
+# ---------------- 词条 ----------------
+# 2026-10-11：**已移除对炒鸡（InfernalMobs）API 的依赖**，词条改为本插件自有体系。
+#
+#   为什么移除：逐行读炒鸡本体源码后确认，它把词条目标类型**写死为 Player**
+#   （SkillContext 只有 Player 字段；触发路由只认「怪打玩家 / 玩家打怪」；
+#    RANGE 类只在 world.getPlayers() 里找目标，找不到连事件都不 fire），
+#   于是 37 个词条里只有 6 个在「怪打怪」下真正生效，而其余 31 个会静默无效、
+#   却照样参与权重加成 —— 配平因此建立在虚假强度上。且我们不是插件所属者，
+#   无法部署改动过的本体，所以这条路整体不可行。
+#
+#   现状（2026-10-12）：**自研词条系统已接入并全部实机验证**，共 28 条。
+#
+# ---------------- ★ 词条改为「全局池 + 少量限制」（2026-10-12 用户裁定）----------------
+#   旧设计把词条清单写在 mob-groups.yml 的**每个怪组**里
+#   （infernal_affixes: [{id, weight-bonus, chance}]），后果是
+#   **只有少数生物能抽到词条**：僵尸永远只有剧毒+复生，骷髅永远只有弓手+披甲，
+#   其余 24 条与它们无关。
+#
+#   现在：**每种生物都能抽到绝大多数词条**，只有少数词条带附加限制
+#   （蜘蛛才会织网、近战才会狂暴、有幼体才有母体、盔甲看得见才有披甲…）。
+#   ⚠️ 因此 `mob-groups.yml` 里的 `infernal_affixes` **已废弃并被完全忽略**
+#      （启动时会打一条告警），不要再往里加词条。
+#
+#   限制与分级都定义在代码里（io.mczju.infernalguess.affix.AffixCatalog），
+#   因为它们是**词条本身的属性** —— 放在代码里才能保证
+#   「注册表 = 池 = 生效范围」三者不漂移（旧设计里它们在三个地方，漂移过多次）。
+#
+#   权重加成改为**统一分级**（用户原话「权重变为原先的 N%」）：
+#     1 级 ×1.10：tosser、mama、vengeance、archer、ender、poisonous、withering、quicksand、rust
+#     2 级 ×1.20：armoured、1up、webber、necromancer、ghastly、gravity、sprint、firework、molten、lifesteal
+#     3 级 ×1.50：mama+、armoured+、bullwark、berserk、storm、weakness、vexsummoner、plastic、wardenwrath
+#   多条命中时**乘法叠加**（沿用原公式 Π(1+加成)）：3 条 3 级 = 1.5³ = 3.375。
+enable-affixes: true
+affixes:
+  # 「词条数—回合数」表：该回合一个组【最多】能命中几条词条（0 = 该回合不生成词条）。
+  #
+  # ★ 抽取方式（2026-10-12 改）：从 28 条全局池里**不放回地抽 0..N 条**，
+  #   **抽中即生效，不再掷 chance**（用户原话：「抽中了直接加进来」）。
+  #   条数 0..N 按三角分布（偏向中间）——两端都保留概率，既不是保底也不是封顶。
+  count-by-round: [0, 0, 1, 1, 1, 2, 2, 2, 3, 3]
+
+# ---------------- 模式 ----------------
+mode: BASIC                       # BASIC（资金模式）| ULTIMATE（终极模式，无资金概念）
+ultimate:
+  life: 1                         # 初始生命
+  shield: 1                       # 初始护盾
+  shield-until-round: 7           # 第 7 回合开始时护盾消失
+  overtime: true                  # 第 10 回合后加时，直到唯一胜者
+bot:
+  enabled: false
+  bots: 0
+  names: ["[AI] 马里奥绿叔", "[AI] 若只兔头", "[AI] 大木登登子", "[AI] 白菜吃米洛", "[AI] 丰川祥子desuwa", "[AI] 魔去ZC目录", "[AI] 伞兵一号", "[AI] 科比·布莱恩特", "[AI] 屁屁卡丘"]
+
+# ---------------- 竞技场与世界 ----------------
+arena:
+  world: lobby                    # 小游戏大厅
+  teleport-players-to-spectate: true   # 下注阶段把玩家送到观战席
+
+world:
+  difficulty: NORMAL              # PEACEFUL | EASY | NORMAL | HARD
+  time-lock: none                 # day | noon | night | midnight | none
+  gamerules:                      # 逐条写入竞技场所在世界
+    doMobLoot: false
+    doMobSpawning: false
+    mobGriefing: false
+    naturalRegeneration: false
+    keepInventory: true
+
+# ---------------- 战斗 ----------------
+battle:
+  follow-range: 64.0              # 索敌距离，需覆盖整个竞技场
+  mob-attributes:
+    scale: 1.0
+    clear-random-equipment: true  # 强制清空原版随机盔甲，再按 mob-groups 穿戴
+    prevent-item-pickup: true     # 防怪物捡地上的东西
+  cleanup-delay-ticks: 5          # 清场延迟（分裂子体晚 1 tick 生成）
+  protect-menu-item: true         # 防丢下注器
+  max-fight-seconds: 60          # 单回合战斗兜底超时：到点仍未全灭则强制判定
+
+  # ---------------- 毒雾（保证战斗一定能在超时前分出胜负）----------------
+  # 开战后 N 秒给场上所有生物挂上「永久凋零」，双方同时持续掉血
+  poison-fog-enabled: true
+  poison-fog-seconds: 30          # 开战后多少秒起雾
+  poison-fog-amplifier: 4         # 0 = 凋零 I，1 = 凋零 II … 4 = 凋零 V（默认）
+
+# ---------------- 调试 ----------------
+debug:
+  enabled: false                  # true 时普通玩家也能用 /ig debug
