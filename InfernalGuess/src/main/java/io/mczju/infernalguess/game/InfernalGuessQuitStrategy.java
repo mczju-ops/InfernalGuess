@@ -44,11 +44,22 @@ public final class InfernalGuessQuitStrategy extends AbstractPlayerQuitStrategy 
 
         Player p = player.player();
         if (p != null) {
+            // 1) 回收局内道具与记分板
             try {
                 plug.menuItemService().take(p);
                 plug.scoreboardService().clear(p);
             } catch (Throwable t) {
                 plug.getLogger().warning("[IG] 回收 " + player.getName() + " 的道具/记分板失败：" + t);
+            }
+            // 2) ★ 单人退出也要**送回房间配的回程点** —— 否则玩家会留在竞技场世界，
+            //    一旦该世界被卸载就会被打回主世界 spawn（Maggoteers 踩过的同一个坑）。
+            //    回退链：房间 return → 房间 wait → 入局前位置 → 主世界 spawn。
+            try {
+                org.bukkit.Location fallback = game instanceof InfernalGuessGame ig
+                        ? ig.joinLocationOf(player.getUniqueId()) : null;
+                InfernalGuessRoom.teleportReturn(game, p, fallback);
+            } catch (Throwable t) {
+                plug.getLogger().warning("[IG] 传送 " + player.getName() + " 回程失败：" + t);
             }
         }
 
@@ -65,5 +76,42 @@ public final class InfernalGuessQuitStrategy extends AbstractPlayerQuitStrategy 
         } catch (Throwable t) {
             plug.getLogger().warning("[IG] 标记退出状态失败：" + t);
         }
+
+        // 3) ★★ 最后一名**真人**也走了 → 立即中止整局
+        //    实测证据（E:\MCpaper\logs\latest.log）：
+        //      08:06:02 /mgc leave → [IG] 玩家退出（COMMAND_QUIT）
+        //      08:06:09 [IG] 第 1 回合开打。下注：（无）   ← 零参与者却继续开打
+        //      08:06:24 [IG] 已无任何存活参与者，收尾      ← 白空转 22 秒
+        //    这期间房间一直是 IN_GAME → 玩家再 /mgc join 会被拒
+        //    （用户原话：对局不结束空转、玩家无法使用 mgc 大厅工具）。
+        //    MGC 自己只在 WAITING 阶段处理「人跑光了」，RUNNING 阶段什么都不做。
+        try {
+            if (game instanceof InfernalGuessGame ig && shouldAbortGame(ig.getPlayers().size())) {
+                ig.abortIfNoPlayersLeft("最后一名玩家离开了对局");
+            }
+        } catch (Throwable t) {
+            plug.getLogger().warning("[IG] 中止空对局失败：" + t);
+        }
+    }
+
+    /**
+     * 玩家离开后是否应当**立即中止整局**。
+     *
+     * <p>规则同时守住两条用户要求：
+     * <ol>
+     *   <li><b>用户第 4 条</b>：单人退出**不终止整局** —— 只要还有真人留着就继续打，
+     *       走掉的那个人只被摘掉自己（{@link GamePlayer#markExited()}）</li>
+     *   <li><b>本次裁定（2026-10-13）</b>：一个真人都不剩 → **立即中止**，
+     *       绝不让场地与房间空转</li>
+     * </ol>
+     *
+     * <p>抽成静态纯函数是为了能离线单测（{@code QuitAbortTest}）：若有人把它
+     * 改成 {@code <= 1}（「只剩一人就结束」），测试会立刻变红。
+     *
+     * @param remainingRealPlayers 仍留在对局内的**真人**数量
+     *                             （人机不算 —— 人机不是 MGC 玩家，见 {@code RoundManager}）
+     */
+    static boolean shouldAbortGame(int remainingRealPlayers) {
+        return remainingRealPlayers <= 0;
     }
 }

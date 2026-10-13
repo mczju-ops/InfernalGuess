@@ -4,6 +4,7 @@ import com.github.mczjuops.mczjugamecore.game.AbstractGame;
 import com.github.mczjuops.mczjugamecore.game.GameMeta;
 import com.github.mczjuops.mczjugamecore.game.strategy.wait.DefaultGameWaitStrategy;
 import com.github.mczjuops.mczjugamecore.game.strategy.wait.GameWaitStrategy;
+import com.github.mczjuops.mczjugamecore.player.PlayerExt;
 import com.github.mczjuops.mczjugamecore.player.strategy.AbstractPlayerDeathStrategy;
 import com.github.mczjuops.mczjugamecore.player.strategy.AbstractPlayerQuitStrategy;
 import io.mczju.infernalguess.InfernalGuessPlugin;
@@ -49,10 +50,58 @@ public final class InfernalGuessGame extends AbstractGame {
                 .build();
     }
 
+    /**
+     * ★ 等待策略：**加入房间时把玩家送到房间配置的集合点**。
+     *
+     * <p>MGC 的游戏生命周期里**没有 {@code onPlayerJoin}** 这个回调
+     * （{@code AbstractGame} 实测只有 gameInit/gameStart/cancelGame/abortGame/endGame），
+     * 玩家入局的挂钩点就在{@link com.github.mczjuops.mczjugamecore.game.strategy.wait.GameWaitStrategy}
+     * 上 —— 这与 Maggoteers 的做法一致（它的 {@code getGameWaitStrategy()} 就是覆写这里）。
+     *
+     * <p>同时记录玩家**入局前的位置**，作为局末回程的回退链第三环
+     * （房间没配 return/wait 时不至于把玩家丢在主世界出生点）。
+     */
     @Override
     public GameWaitStrategy getGameWaitStrategy() {
         GameConfig g = plugin().gameConfig();
-        return new DefaultGameWaitStrategy(this, g.maxPlayers(), g.minPlayers());
+        return new DefaultGameWaitStrategy(this, g.maxPlayers(), g.minPlayers()) {
+            @Override
+            public boolean onPlayerJoin(PlayerExt player) {
+                boolean ok = super.onPlayerJoin(player);
+                if (ok && player != null && player.player() != null) {
+                    InfernalGuessRoom.rememberJoinLocation(joinLocations, player.player());
+                    InfernalGuessRoom.teleportWait(InfernalGuessGame.this, player.player());
+                }
+                return ok;
+            }
+
+            @Override
+            public boolean onPartyJoin(com.github.mczjuops.mczjugamecore.player.party.Party party) {
+                boolean ok = super.onPartyJoin(party);
+                if (ok && party != null) {
+                    party.getAllPlayer().forEach(p -> {
+                        if (p != null && p.player() != null) {
+                            InfernalGuessRoom.rememberJoinLocation(joinLocations, p.player());
+                            InfernalGuessRoom.teleportWait(InfernalGuessGame.this, p.player());
+                        }
+                    });
+                }
+                return ok;
+            }
+        };
+    }
+
+    /**
+     * 玩家**入局前**的位置，供局末回程兜底（房间未配 return/wait 时用）。
+     *
+     * <p>包内可见：{@link InfernalGuessQuitStrategy} 单人退出时也要走同一条回程。
+     */
+    final java.util.Map<java.util.UUID, org.bukkit.Location> joinLocations =
+            new java.util.HashMap<>();
+
+    /** 取某玩家入局前的位置（没有记录时返回 {@code null}）。 */
+    org.bukkit.Location joinLocationOf(java.util.UUID id) {
+        return id == null ? null : joinLocations.get(id);
     }
 
     @Override
@@ -244,11 +293,20 @@ public final class InfernalGuessGame extends AbstractGame {
             if (p == null || !p.isOnline()) {
                 continue;
             }
+            // 1) 回收局内道具与记分板
             try {
                 plug.menuItemService().take(p);
                 plug.scoreboardService().clear(p);
             } catch (Throwable t) {
                 logger.warn("[IG] 回收 " + p.getName() + " 的道具/记分板失败：" + t);
+            }
+            // 2) ★ 回程：送回房间配的 returnLocation
+            //    （未配则回退 wait → 入局前位置 → 主世界 spawn，见 InfernalGuessRoom.teleportReturn）
+            //    刻意与上面分开 try：传送失败不该让「回收」看起来也失败了，反之亦然。
+            try {
+                InfernalGuessRoom.teleportReturn(this, p, joinLocationOf(p.getUniqueId()));
+            } catch (Throwable t) {
+                logger.warn("[IG] 传送 " + p.getName() + " 回程失败：" + t);
             }
         }
     }
@@ -259,6 +317,8 @@ public final class InfernalGuessGame extends AbstractGame {
         }
         cleanedUp = true;
         logger.info("[IG] 对局清理（" + reason + "）");
+        // 局末位置记录只在**本局**有意义，留着会让复用房间的下一局用错兜底位置
+        joinLocations.clear();
         // 阶段 6 接入：清场、回收下注器
         // 阶段 7 接入：资金结算与排行
     }
@@ -328,6 +388,41 @@ public final class InfernalGuessGame extends AbstractGame {
         } catch (Throwable t) {
             logger.error("[IG] 通知 MGC 中止对局失败（房间可能被占住）：" + t);
         }
+    }
+
+    /**
+     * ★ 对局内**一名真人都没有**时立即中止（供 {@link InfernalGuessQuitStrategy} 调用）。
+     *
+     * <h2>为什么必须由我们收尾</h2>
+     * MGC 只在 <b>WAITING</b> 阶段自己处理「人跑光了」——
+     * {@code DefaultGameWaitStrategy.onPlayerLeave} 里当 {@code getPlayers().isEmpty()}
+     * 会调 {@code GameManager.cancelGame}；而 <b>RUNNING</b> 阶段它只把玩家从自己的名单里
+     * 摘掉（{@code DefaultPlayerManager.leaveGame} 的字节码顺序是：
+     * 先 {@code playerGameMap.remove} → 再回调 {@code getPlayerQuitStrategy().onPlayerQuit}），
+     * **不会**结束对局。于是回合状态机会带着 0 名参与者把当前回合完整打完。
+     *
+     * <p>实测证据（{@code E:\MCpaper\logs\latest.log}）：
+     * <pre>
+     *   08:06:02  /mgc leave → [IG] 玩家退出：YamatoMaya（原因 COMMAND_QUIT）
+     *   08:06:09  [IG] 第 1 回合开打。下注：（无）        ← 零参与者仍在打
+     *   08:06:24  [IG] 已无任何存活参与者，收尾           ← 白空转 22 秒
+     * </pre>
+     * 这 22 秒里房间一直处于 IN_GAME，玩家再 {@code /mgc join} 会被拒
+     * （「该游戏没有空闲的房间」），表现为「无法使用 mgc 大厅工具」。
+     *
+     * @param trigger 触发原因（写进日志）
+     * @return 是否真的发起了中止
+     */
+    boolean abortIfNoPlayersLeft(String trigger) {
+        if (!getPlayers().isEmpty()) {
+            return false;   // 还有真人在局内 → 按用户第 4 条继续打
+        }
+        if (cleanedUp) {
+            return false;   // 已经收尾过，避免重复中止
+        }
+        logger.info("[IG] 对局内已无任何真人（" + trigger + "）→ 立即中止，不再空转整回合");
+        abortViaManager();
+        return true;
     }
 
     public InfernalGuessPlugin plugin() {

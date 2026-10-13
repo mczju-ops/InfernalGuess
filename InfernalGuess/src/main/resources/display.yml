@@ -20,8 +20,8 @@ messages:
   not-in-game: "<red>你当前不在对局中。"
 
   game:
-    meta-name: "<gold>InfernalGuess"
-    meta-author: "<green>MCZJU"
+    meta-name: "<gold>炒鸡斗蛐蛐"
+    meta-author: "<green>_YamatoMaya_"
     meta-description:
       - "<aqua>“好得不能再好了！”投资大师课"
       - "<gray>赢赢赢还是输光光只在一念之间"

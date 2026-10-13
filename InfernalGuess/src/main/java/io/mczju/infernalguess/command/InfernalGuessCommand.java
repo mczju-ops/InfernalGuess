@@ -1395,7 +1395,7 @@ public final class InfernalGuessCommand implements CommandExecutor, TabCompleter
             }
             case "ultimate", "ult" -> {
                 cfg.setModeOverride(io.mczju.infernalguess.config.GameMode.ULTIMATE);
-                sender.sendMessage(ok("本局模式 → 终极对决模式（ULTIMATE，无资金概念）"));
+                sender.sendMessage(ok("本局模式 → 对决模式（ULTIMATE）"));
             }
             case "bots", "bot" -> {
                 if (value.isEmpty()) {

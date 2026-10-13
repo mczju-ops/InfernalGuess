@@ -1373,13 +1373,18 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
     // ================= 清场 =================
 
     /**
-     * 清场。
+     * 清场 —— ★ 范围受**铁律 10** 严格约束（判定逻辑见 {@link CleanupPolicy}）。
      *
      * <p>要点：
      * <ol>
-     *   <li>炒鸡怪走 {@code removeEntity}（不触发死亡/掉落/击杀统计/亡语）</li>
-     *   <li><b>黑名单式全清</b>：遍历世界上所有实体，保留 Player / Item / 我们自己，
-     *       其余非玩家实体一并移除 —— 防止炒鸡词条召唤的子实体残留</li>
+     *   <li><b>先按追踪表清「本插件接管的实体」</b>（按 UUID，**无距离限制**）
+     *       —— 这是唯一允许的"全量"清理</li>
+     *   <li>再做<b>竞技场范围内的兜底清理</b>：以竞技场玩家出生点为心、半径
+     *       {@link CleanupPolicy#ARENA_RADIUS} 格内，只清投射物 / 烟花 / 未接管的怪物，
+     *       用来兜住战斗中衍生的、未登记进追踪表的实体</li>
+     *   <li>⚠️ <b>严禁遍历整个世界做无差别清理</b> —— 现场 {@code arenas.yml} 实测竞技场
+     *       就在<b>主世界</b>（{@code world: world}），世界级清理连玩家的假人、盔甲架、
+     *       动物、村民和其它插件的实体一起删（用户 2026-10-12 裁定）</li>
      *   <li>移除计分板影子队伍</li>
      *   <li>清空追踪表与静态映射（防内存泄漏）</li>
      * </ol>
@@ -1396,7 +1401,9 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
         }
         stopPoisonFog();
 
-        // 1) 先按追踪表逐个移除
+        // 1) 先按追踪表逐个移除（**本插件接管的实体，无距离限制** —— 铁律 10 第 1 条）
+        //    先留一份 UUID 快照：下面会清空 BY_ENTITY，之后还要用它来区分「自己的」与「别人的」
+        java.util.Set<UUID> ours = new java.util.HashSet<>(BY_ENTITY.keySet());
         for (BattleTracker.TrackedUnit unit : tracker.all()) {
             Entity e = Bukkit.getEntity(unit.uuid());
             if (e instanceof LivingEntity le) {
@@ -1405,6 +1412,9 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
                 if (!le.isDead()) {
                     le.remove();
                 }
+            } else if (e != null) {
+                // 兜底：接管的实体不是 LivingEntity（当前设计下不会出现）→ 直接移除
+                e.remove();
             }
             BY_ENTITY.remove(unit.uuid());
         }
@@ -1418,22 +1428,42 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
             plugin.getLogger().info("[IG] 已还原 " + restored + " 个被词条改动过的方块。");
         }
 
-        // 2) 黑名单式全清（兜住战斗中衍生的、未登记进追踪表的实体）
-        if (world != null) {
+        // 2) ★ 竞技场范围内的兜底清理（铁律 10）
+        //    中心 = 竞技场「玩家出生点」（缺配置时退回观战席，都没有 → 跳过）
+        //    范围 = 半径 CleanupPolicy.ARENA_RADIUS 格
+        //    对象 = 投射物 / 烟花 / 未接管的怪物
+        //    ⚠️ 绝不遍历整个世界做无差别清理 —— 竞技场就在主世界，那样会删掉玩家的一切布景。
+        Location center = arenaCleanupCenter();
+        if (world != null && center == null) {
+            plugin.getLogger().warning("[IG] 竞技场缺少 player-spawn/spectate-spawn，"
+                    + "已跳过范围内的兜底清理（本插件不做世界级清理）。");
+        }
+        if (world != null && center != null) {
+            int swept = 0;
             for (Entity e : world.getEntities()) {
-                if (e instanceof Player || e instanceof Item) {
+                if (ours.contains(e.getUniqueId())) {
+                    continue;   // 本插件接管的实体：第 1 步已按 UUID 清掉（无距离限制）
+                }
+                Location at = e.getLocation();
+                if (!CleanupPolicy.shouldRemoveUnmanaged(
+                        e instanceof Player, e instanceof Item,
+                        e instanceof org.bukkit.entity.Projectile, e instanceof Firework,
+                        e instanceof org.bukkit.entity.Enemy,
+                        at.getX() - center.getX(),
+                        at.getY() - center.getY(),
+                        at.getZ() - center.getZ())) {
                     continue;
                 }
-                if (e instanceof LivingEntity le) {
-                    le.remove();
-                } else if (e instanceof org.bukkit.entity.Projectile
-                        || e instanceof org.bukkit.entity.Firework) {
-                    // ★ 投射物**不是 LivingEntity**，旧实现漏掉了它们 ——
-                    //   实测症状：溺尸丢出的三叉戟、骷髅射出的箭**插在地上不消失**，
-                    //   回合结束后仍留在场地里，很影响观感。
-                    //   这里与上面的「全清」保持一致（同为世界级清理）。
-                    e.remove();
-                }
+                // 投射物**不是** LivingEntity，旧实现曾漏掉它们 ——
+                // 实测症状：溺尸丢出的三叉戟、骷髅射出的箭插在地上不消失。
+                // 现在它们与「未接管怪物」共用同一条半径规则，而不是世界级清理。
+                e.remove();
+                swept++;
+            }
+            if (swept > 0) {
+                plugin.getLogger().info("[IG] 已清理竞技场半径 "
+                        + (long) CleanupPolicy.ARENA_RADIUS + " 格内的 " + swept
+                        + " 个残留实体（投射物/烟花/未接管怪物）。");
             }
         }
 
@@ -1453,6 +1483,26 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
             current = null;
         }
         plugin.getLogger().info("第 " + round + " 回合已清场。");
+    }
+
+    /**
+     * 兜底清理的中心点：竞技场**玩家出生点**（{@code player-spawn}），
+     * 未配置时退回**观战席**（{@code spectate-spawn}）。
+     *
+     * <p>返回 {@code null} 表示**无法确定范围** → 调用方必须**跳过**兜底清理。
+     * 铁律 10：宁可留下残留，也绝不把清理范围放大到整个世界。
+     */
+    private Location arenaCleanupCenter() {
+        if (arena == null || world == null) {
+            return null;
+        }
+        if (arena.playerSpawn() != null) {
+            return arena.playerSpawn().toLocation(world);
+        }
+        if (arena.spectateSpawn() != null) {
+            return arena.spectateSpawn().toLocation(world);
+        }
+        return null;
     }
 
     // ================= 访问 =================
