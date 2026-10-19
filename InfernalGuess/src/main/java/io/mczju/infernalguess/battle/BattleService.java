@@ -108,11 +108,24 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
      */
     public void prepare(RoundPlan plan, ArenaConfig.Arena arena, World world) {
         if (current != null) {
+            // 真·并发冲突（同一时间只允许一场战斗）。★ 「上一场没清干净」这种残留
+            // 在更上游就处理掉了：`InfernalGuessGame.startSession()` 开头会先清掉
+            // `current` 里残留的那一场（那时 `activeRound` 还是空的，判得准）。
             throw new IllegalStateException("已有一场战斗在进行（同一时间只允许一场）");
         }
         this.arena = arena;
         this.world = world;
         this.round = plan.round();
+
+        // ★ 开局前先扫掉竞技场里的**残留实体**（用户 2026-10-13 报「前一局留下清不掉的实体」）。
+        //   为什么必须有这一步：我们的单位都是 persistent（`setRemoveWhenFarAway(false)` +
+        //   `setPersistent(true)`），正常靠 `cleanup()` 按 UUID 删除；但若上一局是**关服 /
+        //   异常退出**结束的（`skipCleanupWhileDisabling` 刻意跳过清场，见那边的注释），
+        //   那些单位就永远留在世界里 —— 它们属于**已经死掉的战斗实例**，新战斗的追踪表里
+        //   没有它们的 UUID，于是**谁都清不掉**。这里用**同一条 `CleanupPolicy` 规则**
+        //   （竞技场中心 64 格内、只管投射物/烟花/未接管怪物；绝不碰玩家、掉落物与其它插件的实体）
+        //   在开局前兜一次底。
+        purgeArenaLeftovers();
 
         GameConfig cfg = plugin.gameConfig();
         spawning = true;
@@ -315,8 +328,15 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
         tracker.track(mob.getUniqueId(), side, true);
         BY_ENTITY.put(mob.getUniqueId(), this);
         plugin.affixRegistry().equip(mob);
+        // ★ **中途注入必须立刻解锁 AI**：装配链最后一步是 lockAi（准备阶段的正常做法），
+        //   但若这一局**已经在打**，锁着的怪会**冻在原地一步不动** ——
+        //   2026-10-13 实测：战斗中途注入的苦力怕 20 秒没挪窝，根本炸不到人。
+        //   与 adoptDerived 的处理保持一致（那边也有同一行）。
+        if (fighting && mob instanceof Mob midFightMob) {
+            unlockAi(midFightMob, side);
+        }
         plugin.getLogger().info("[IG] 定点注入 " + group.id() + "（" + side.id() + "）"
-                + (ids.isEmpty() ? " 无词条" : " 词条=" + ids));
+                + (ids.isEmpty() ? " 无词条" : " 词条=" + ids) + (fighting ? "（战斗中，AI 已解锁）" : ""));
         return mob;
     }
 
@@ -362,6 +382,8 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
         }
         mob.setRemoveWhenFarAway(false);
         mob.setPersistent(true);
+        // 2.5) ★ 体型倍率（只为「远处也看得见」）—— 见 applyRenderScale 的注释
+        applyRenderScale(mob, cfg);
         // 3) 索敌距离：要覆盖整个竞技场
         AttributeInstance follow = mob.getAttribute(Attribute.FOLLOW_RANGE);
         if (follow != null) {
@@ -381,9 +403,56 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
                 + " sideOf=" + sideOf(mob).map(Enum::name).orElse("无"));
     }
 
+    /** 每种「生物类型 × 倍率」只打一次体型放大日志。 */
+    private final java.util.Set<String> scaleLogged = new java.util.HashSet<>();
+
+    /**
+     * ★ 按 {@code config.yml} 的倍率放大**包围盒太小**的单位，让它们在竞技场任何角落都看得见。
+     *
+     * <h2>为什么需要（26.2 反编译实测）</h2>
+     * 客户端判「画不画这个实体」用的是
+     * {@code Entity#shouldRenderAtSqrDistance} = {@code (包围盒三边均值 × 64 × 客户端实体渲染距离)²}
+     * —— 只与**包围盒大小**有关 ⇒ 蠹虫/末影螨（0.4×0.3×0.4）默认只有 **23.5 格**，
+     * 48×48 的场地对角约 68 格，它们跑到场那头就从画面上消失了。
+     * 服务端的追踪距离（96~128 格）远大于此，**包都发了**，问题不在服务端。
+     *
+     * <h2>为什么用 {@code Attribute.SCALE}</h2>
+     * 它是 26.2 里 {@code setSyncable(true)} 的原版属性（javap + 反编译实测）⇒
+     * 客户端会同步到缩放后的包围盒，剔除距离随之变远；同时**不改血量/伤害**
+     * （只改模型大小与判定框）。倍率写在 {@code battle.mob-attributes.scale-overrides}。
+     *
+     * <p>日志把**放大前后的可见距离**都打出来，方便事后对账（例如「狐狸 40.5 → 48.2 格」）。
+     */
+    private void applyRenderScale(LivingEntity mob, GameConfig cfg) {
+        double scale = cfg.scaleFor(mob.getType());
+        if (Math.abs(scale - 1.0) < 1e-6) {
+            return;   // 没配置（或配成 1.0）就不动它
+        }
+        AttributeInstance attr = mob.getAttribute(Attribute.SCALE);
+        if (attr == null) {
+            return;   // 该生物没有 scale 属性（26.2 里所有 LivingEntity 都有，这里是保险）
+        }
+        // ★ 必须**先**读放大前的尺寸再改属性：改完的同一 tick 内
+        //   `getWidth()/getHeight()` 还是旧值（属性→尺寸的刷新不走这条同步路径，
+        //   第 10 轮实测把前/后写反过一次：日志出现「7.8 → 23.5」而不是「23.5 → 70.4」）。
+        double before = RenderCulling.renderDistance(
+                RenderCulling.bboxAverage(mob.getWidth(), mob.getHeight(), mob.getWidth()));
+        attr.setBaseValue(scale);
+        if (scaleLogged.add(mob.getType() + "|" + scale)) {
+            plugin.getLogger().info("[IG] 体型放大 " + mob.getType() + " ×"
+                    + String.format(java.util.Locale.ROOT, "%.2f", scale)
+                    + "：客户端可见距离 " + trim(before) + " 格 → " + trim(before * scale)
+                    + " 格（包围盒太小会在远处被客户端剔除）");
+        }
+    }
+
+    /** 日志里把距离裁到 1 位，避免 `3.0000000000000004` 这种噪音。 */
+    private static String trim(double value) {
+        return String.format(java.util.Locale.ROOT, "%.1f", value);
+    }
+
     /**
      * **按需诊断**：只在 JVM 启动参数 {@code -Digdiag=true} 时输出。
-     *
      * <p>为什么做成开关而不是「加日志→跑→删」：这类「配置写了却没生效」的问题
      * 反复出现（见 dev-log 062），留一个**零开销、可随时打开**的探针，
      * 比每次临时改代码再删更可靠 —— 也不会因为忘记删而留下噪音。
@@ -757,6 +826,202 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
         return "1".equals(v);
     }
 
+    // ================= 「最后一次击杀」归因（同归于尽判定用） =================
+
+    /**
+     * 一次**敌方击杀**的归因快照。
+     *
+     * @param killerSide 击杀者阵营
+     * @param killerType 击杀者类型（同归于尽规则只关心是不是 {@code CREEPER}）
+     * @param killerName 击杀者显示名（日志用）
+     */
+    public record Kill(BattleSide killerSide, org.bukkit.entity.EntityType killerType,
+                       String killerName, org.bukkit.entity.EntityType victimType) {
+    }
+
+    /**
+     * ★ 本回合**最后一次「敌方单位打死我方单位」**的记录（用户 2026-10-13 同归于尽规则）。
+     *
+     * <p>只记「敌方击杀」：环境伤害（毒雾/凋零/摔落）、自杀、同阵营误伤都**不覆盖**它 ——
+     * 因为要回答的问题是「最后是谁把对方打死的」，不是「最后一个死的是谁」。
+     */
+    private Kill lastKill;
+
+    /** 本回合最后一次敌方击杀（没有就返回 {@code null}）。 */
+    public Kill lastKill() {
+        return lastKill;
+    }
+
+    /**
+     * 单位死亡时调用：若它是被**敌方参战单位**打死的，记下这次击杀。
+     *
+     * <p>为什么要从 {@code getLastDamageCause()} 反查而不是用 {@code Entity#getKiller()}：
+     * 后者**只对玩家击杀返回非 null**（见 {@code AffixContext} 的注释），
+     * 怪打怪的击杀它一律给 null ⇒ 拿不到「谁打死的」。
+     */
+    public void recordKill(LivingEntity victim) {
+        Entity killer = resolveKiller(victim);
+        if (killer == null || killer.getUniqueId().equals(victim.getUniqueId())) {
+            return;
+        }
+        Optional<BattleSide> killerSide = sideOf(killer);
+        Optional<BattleSide> victimSide = sideOf(victim);
+        if (killerSide.isEmpty() || victimSide.isEmpty() || killerSide.get() == victimSide.get()) {
+            return;   // 环境 / 自杀 / 同阵营：不是「敌方击杀」
+        }
+        String name = killer.customName() == null ? killer.getType().name()
+                : net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
+                .plainText().serialize(killer.customName());
+        lastKill = new Kill(killerSide.get(), killer.getType(), name, victim.getType());
+        // ★ 苦力怕的击杀单独打一条日志：它是「同归于尽判胜」的唯一例外，
+        //   而苦力怕本身很罕见（一局未必出现），所以这条日志不会刷屏，
+        //   却能证明**归因确实抓到了它**（用户 2026-10-13 规则）。
+        if (killer.getType() == org.bukkit.entity.EntityType.CREEPER) {
+            plugin.getLogger().info("[IG] 苦力怕击杀归因：" + name + "（" + killerSide.get().id()
+                    + " 方）打死 " + victim.getType() + " —— 若随后全场同时死亡，将判 "
+                    + killerSide.get().id() + " 方胜");
+        }
+    }
+
+    /**
+     * ★ **开局前的残留清理**：把竞技场中心 {@link CleanupPolicy#ARENA_RADIUS} 格内的
+     * 「投射物 / 烟花 / 未接管怪物」扫一遍（用户 2026-10-13 报「前一局留下清不掉的实体」）。
+     *
+     * <p>与 {@link #cleanup()} 里的兜底清理**共用同一份规则**（{@link #sweepArenaUnmanaged}）——
+     * 区别只是：这里没有「本回合追踪表」，所以不存在「我们的实体」，`ours` 传空集即可。
+     *
+     * <p>⚠️ 为什么残留会存在：单位是 persistent，正常靠 `cleanup()` 按 UUID 删；
+     * 但**关服 / 异常退出**时 `skipCleanupWhileDisabling` 会跳过清场，那些实体属于一个
+     * 已经销毁的战斗实例 ⇒ 新战斗的追踪表里没有它们 ⇒ 谁都不会再删它们。
+     */
+    private void purgeArenaLeftovers() {
+        if (world == null) {
+            return;
+        }
+        // ★ 第一优先：**我们自己的**残留参战单位（按 PDC 的 battleId 识别，跨战斗实例有效）。
+        //   为什么必须有这一步：铁律 10 的「未接管怪物」只覆盖 `Enemy`，而我们的单位里有
+        //   **大量不是 Enemy 的** —— 骆驼/马/鸡（坐骑）、北极熊、村民系……它们同样
+        //   persistent，同样会因为「关服/异常退出跳过清场」而永远留下（用户 2026-10-19 实测：
+        //   「出现了上一局残留的坐骑」）。PDC 里的 `side`+`battleId` 是**随实体持久化**的，
+        //   所以能精确认出「这是某一场已经结束的战斗的单位」—— 与类型无关。
+        int own = sweepStaleOwnUnits();
+        if (own > 0) {
+            plugin.getLogger().warning("[IG] 开局前清理了 " + own
+                    + " 个上一局残留的**参战单位**（含坐骑/乘客/召唤物；按 PDC 阵营+battleId 识别）。");
+        }
+
+        Location center = arenaCleanupCenter();
+        if (center == null) {
+            plugin.getLogger().warning("[IG] 竞技场缺少 player-spawn/spectate-spawn，"
+                    + "已跳过开局前的范围清理（本插件不做世界级清理）。");
+            return;
+        }
+        int swept = sweepArenaUnmanaged(center, java.util.Set.of());
+        if (swept > 0) {
+            plugin.getLogger().warning("[IG] 开局前清理了竞技场里 " + swept
+                    + " 个上一局残留的实体（投射物/烟花/未接管怪物，半径 "
+                    + (long) CleanupPolicy.ARENA_RADIUS + " 格）。"
+                    + "若频繁出现，说明对局是被关服/异常退出的方式结束的。");
+        }
+    }
+
+    /**
+     * ★ 清掉**本插件自己在别的战斗实例里留下的**参战单位（含所有非 `Enemy` 的坐骑/动物）。
+     *
+     * <p>识别依据：PDC 的 {@link BattleTags#side()} + {@link BattleTags#battleId()} ——
+     * 两者都随实体持久化，所以「被 `remove()` 忘了」的单位重启后仍能被认出来。
+     * 判定：**带 side 标记**，且 battleId **不是本场**（旧版本没有 battleId 的也算残留）。
+     *
+     * <p>⚠️ 绝不碰玩家（铁律 10：玩家永不清理）。
+     *
+     * @return 移除的数量
+     */
+    private int sweepStaleOwnUnits() {
+        int removed = 0;
+        String mine = battleId.toString();
+        for (Entity e : world.getEntities()) {
+            if (e instanceof Player) {
+                continue;   // 铁律 10：玩家永不清理
+            }
+            var pdc = e.getPersistentDataContainer();
+            if (pdc.get(BattleTags.side(), PersistentDataType.STRING) == null) {
+                continue;   // 没有阵营标记 ⇒ 不是我们的参战单位
+            }
+            String tag = pdc.get(BattleTags.battleId(), PersistentDataType.STRING);
+            if (tag != null && tag.equals(mine)) {
+                continue;   // 本场的（理论上 prepare 时不存在，保险起见跳过）
+            }
+            e.remove();
+            removed++;
+        }
+        return removed;
+    }
+
+    /**
+     * 按 {@link CleanupPolicy} 扫一遍竞技场范围内的「未接管」实体。
+     *
+     * @param center 竞技场中心（玩家出生点 / 观战席）
+     * @param ours   **本实例接管的**实体 UUID（这些不在这里清 —— 由调用方按 UUID 处理）
+     * @return 实际移除的数量
+     */
+    private int sweepArenaUnmanaged(Location center, java.util.Set<UUID> ours) {
+        int swept = 0;
+        for (Entity e : world.getEntities()) {
+            if (ours.contains(e.getUniqueId())) {
+                continue;   // 本插件接管的实体：按 UUID 清（无距离限制，铁律 10 第 1 条）
+            }
+            Location at = e.getLocation();
+            if (!CleanupPolicy.shouldRemoveUnmanaged(
+                    e instanceof Player, e instanceof Item,
+                    e instanceof org.bukkit.entity.Projectile, e instanceof Firework,
+                    e instanceof org.bukkit.entity.Enemy,
+                    at.getX() - center.getX(),
+                    at.getY() - center.getY(),
+                    at.getZ() - center.getZ())) {
+                continue;
+            }
+            // 投射物**不是** LivingEntity，旧实现曾漏掉它们 ——
+            // 实测症状：溺尸丢出的三叉戟、骷髅射出的箭插在地上不消失。
+            e.remove();
+            swept++;
+        }
+        return swept;
+    }
+
+    /**
+     * **仅供调试**：把本回合所有「本插件接管的单位」一次性打死（按 UUID，无距离限制 —— 铁律 10 允许）。
+     *
+     * <p>为什么需要：同归于尽是**运气事件**（毒雾同时带走双方、苦力怕与敌人同归于尽……），
+     * 没有这个入口就只能等它自然发生，「真平局 / 苦力怕判胜」两条分支永远无法在实机里核对。
+     *
+     * @return 被打死的单位数
+     */
+    public int killAllTrackedForDebug() {
+        int killed = 0;
+        for (BattleTracker.TrackedUnit unit : tracker.all()) {
+            Entity e = Bukkit.getEntity(unit.uuid());
+            if (e instanceof LivingEntity le && !le.isDead() && le.isValid()) {
+                le.setHealth(0.0);   // 与毒雾致死同一条死亡事件路径（会走 recordKill / handleDeath）
+                killed++;
+            }
+        }
+        return killed;
+    }
+
+    /** 从「最后一击」反查击杀者实体：直接伤害取 damager，投射物取 shooter。 */
+    private static Entity resolveKiller(LivingEntity victim) {
+        var cause = victim.getLastDamageCause();
+        if (!(cause instanceof org.bukkit.event.entity.EntityDamageByEntityEvent byEntity)) {
+            return null;
+        }
+        Entity damager = byEntity.getDamager();
+        if (damager instanceof org.bukkit.entity.Projectile projectile
+                && projectile.getShooter() instanceof Entity shooter) {
+            return shooter;   // 箭/火球：算射手的击杀
+        }
+        return damager;
+    }
+
     // ================= AI 控制 =================
 
     private void lockAi(LivingEntity entity) {
@@ -886,11 +1151,9 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
         try {
             var goals = Bukkit.getMobGoals();
             goals.removeAllGoals(mob, GoalType.TARGET);
-            // ★★ 摘掉「惊恐」goal（用户实测：毒雾升起后被动生物失去攻击欲望）
-            //    原版 PanicGoal 的触发条件之一是 getLastHurtByMob() != null ——
-            //    毒雾**持续**造成伤害，该条件一直成立 → 惊恐 goal 一直抢占行为槽
-            //    （它的优先级高于我们的索敌 goal）→ 它们只会一直逃跑。
-            removePanicGoals(goals, mob);
+            // ★★ 摘掉「分心」goal（用户实测：毒雾升起后被动生物失去攻击欲望；
+            //    2026-10-13 追加：**溺尸在干地上会去找水**，于是宁愿找水也不打）
+            java.util.List<String> removedGoals = removeDistractionGoals(goals, mob);
             // ★ 山羊：换成**尖叫山羊**（原版冲撞间隔 5~15 秒，远短于普通山羊的 30 秒~5 分钟），
             //    实际冲撞节奏由 tickGoatRams 控制（用户指定 2 秒）。
             if (mob instanceof org.bukkit.entity.Goat goat) {
@@ -908,18 +1171,62 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
             //     载具**自带**原版近战模组（劫掠兽 / 蜘蛛）→ **不插手**，让它自己追打
             //     载具是**被动**生物（僵尸马 / 骷髅马 / 鸡 / 炽足兽 / 骆驼）→ 才挂导航 Goal
             //   ★ 这条规则自动只命中 spider_jockey 与 evoker_knight 这两个组合。
-            boolean hasMelee = hasNativeMelee(goals, mob);
-            boolean mountNeedsOurDrive = !mob.getPassengers().isEmpty() && !hasMelee;
-            if (mountNeedsOurDrive && !goals.hasGoal(mob, MountDriveGoal.key())) {
+            // ★★ 判据必须在**挂我们自己的 goal 之前**算：
+            //   `isBrainOnly` 的定义是「一个 goal 都没有」，而下一段就会挂上
+            //   EnemyTargetGoal —— 先挂再算 ⇒ 永远算不出 brain 型
+            //   （2026-10-13 首次实机验证就踩到：疣猪兽被打上 `mount_drive`，
+            //     日志里 `MOVE=[mount_drive]` 把它自己招了）。
+            String attackKey = nativeAttackGoal(goals, mob);
+            boolean hasAttack = attackKey != null;
+            boolean brainOnly = isBrainOnly(goals, mob);
+            // ★ 走原版 AI 的例外名单（当前为**空** —— 用户已撤销疣猪兽那条例外，
+            //   见 VANILLA_AI_TYPES 的注释）。
+            boolean vanillaAi = VANILLA_AI_TYPES.contains(mob.getType());
+            if (brainOnly) {
+                // brain 型：setTarget 对它们多半是空操作（getTarget() 读 brain），
+                // 但心跳里还有 forceBrainAnger（猪灵的 ANGRY_AT）与反复重申，
+                // 至少别让它们「连兜底都没有」。
+                brainMobs.add(mob.getUniqueId());
+            }
+            if (!goals.hasGoal(mob, EnemyTargetGoal.key())) {
+                goals.addGoal(mob, 1, new EnemyTargetGoal(mob, side, this, cfg.followRange()));
+            }
+            // ★ 载具（有乘客的怪）的移动归属：
+            //   项目早期是「载具一律挂我们的导航 Goal」，但那会**顶掉载具自己的原版近战 goal**
+            //   —— 因为同一时刻只能运行一个 MOVE 类 goal。
+            //   实测症状（用户反馈）：唤魔者骑士把女巫顶在墙角，却**只有唤魔者在输出**
+            //   （劫掠兽不咬人，而唤魔者的魔法打女巫伤害很低）。
+            //   现在的规则：
+            //     载具**自带**原版近战模组（劫掠兽 / 蜘蛛）→ **不插手**，让它自己追打
+            //     载具是**被动**生物（僵尸马 / 骷髅马 / 鸡 / 炽足兽 / 骆驼）→ 才挂导航 Goal
+            //   ★ 这条规则自动只命中 spider_jockey 与 evoker_knight 这两个组合。
+            // ★★ 2026-10-13 放宽：由「只有载具」放宽到「**所有没有自带攻击 goal 的单位**」。
+            //    原因（用户反馈）：海龟 / 美西螈这类怪开局后**只会原地站着或闲逛** ——
+            //    因为它们身上**没有任何会把它们带向敌人的 MOVE goal**
+            //    （我们的 EnemyTargetGoal 是 TARGET 类，只负责 setTarget，不负责走路）。
+            //    载具当年就是因为同一个原因才需要它，现在把同一套办法给所有「没有输出模组」的怪。
+            //    ⚠️ 但「没有攻击 goal」必须**真的没有**：判据由手写白名单改成扫 goal 清单
+            //    （2026-10-13 狐狸事故），否则会把「key 名字没在白名单里」的怪当成没输出，
+            //    然后用自己的 MOVE goal 把它的近战 goal 顶掉 —— 越修越坏。
+            //    ★ 并且「brain 型」不等于「不驱动」：美西螈（brain 型）就是靠我们的驱动
+            //    走向敌人的（dev-log 073 实测）。只有用户点名的生物走原版 AI。
+            boolean needsOurDrive = !hasAttack && !vanillaAi;
+            if (needsOurDrive && !goals.hasGoal(mob, MountDriveGoal.key())) {
                 goals.addGoal(mob, 0, new MountDriveGoal(mob, side, this, cfg.followRange()));
             }
             // ★ 把「AI 装载决策」打出来 —— 否则这几项改动静默、事后无法验证。
             //   每种「阵营+生物类型+决策组合」只打一次，避免每回合刷一屏日志。
-            String aiSig = side + "|" + mob.getType() + "|" + mountNeedsOurDrive + "|" + hasMelee;
+            //   ★ 2026-10-13 追加 MOVE goal 清单：它是「这只怪会不会真的去打」的**直接证据**
+            //     （溺尸不攻击那次就是因为看不到它当时挂的是哪个 MOVE goal，只能猜）。
+            String aiSig = side + "|" + mob.getType() + "|" + needsOurDrive + "|" + hasAttack + "|" + vanillaAi;
             if (aiLogged.add(aiSig)) {
                 plugin.getLogger().info("[IG] AI 装载 " + side + " " + mob.getType()
-                        + "：索敌✓｜导航" + (mountNeedsOurDrive ? "✓(被动载具)" : "✗")
-                        + "｜自带近战" + (hasMelee ? "✓(放手让它打)" : "✗")
+                        + "：索敌✓｜导航" + (needsOurDrive ? "✓(我们驱动)"
+                                : vanillaAi ? "✗(原版 AI·点名例外)" : "✗(自带攻击)")
+                        + "｜自带输出" + (hasAttack ? "✓(" + attackKey + ")" : "✗")
+                        + "｜已摘=" + removedGoals
+                        + "｜MOVE=" + describeMoveGoals(goals, mob)
+                        + (brainOnly ? "｜brain 型" : "")
                         + (mob instanceof org.bukkit.entity.Goat ? "｜尖叫山羊✓" : ""));
             }
         } catch (Throwable t) {
@@ -928,6 +1235,15 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
             //   否则 brain 会很快把目标改回去，表现为「站着不动」。
             brainMobs.add(mob.getUniqueId());
             mob.setTarget(findEnemy(mob, side, cfg.followRange()));
+            // ★ 这条日志和上面那条一样重要：否则「brain 型走了兜底」这件事**完全没有痕迹**，
+            //   事后只能靠猜（2026-10-13 排查疣猪兽骑士时正是如此）。
+            String brainSig = "brain|" + side + "|" + mob.getType();
+            if (aiLogged.add(brainSig)) {
+                plugin.getLogger().info("[IG] AI 装载 " + side + " " + mob.getType()
+                        + "：索敌✓(心跳重申)｜导航✗(brain 型·原版 AI)"
+                        + "｜自带输出✗(" + t.getClass().getSimpleName() + ")"
+                        + "｜MOVE=" + describeMoveGoals(Bukkit.getMobGoals(), mob));
+            }
         }
     }
 
@@ -935,49 +1251,272 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
     private final java.util.Set<UUID> brainMobs = new java.util.HashSet<>();
 
     /**
-     * 各类「惊恐 / 逃跑」goal 的 key。
+     * 美西螈「假死复活」状态：UUID → 已经用掉几次复活。
      *
-     * <p>类型是异构的（{@code GoalKey<Creature>} / {@code GoalKey<Tameable>} / …），
-     * 所以存成通配再在调用处转型；摘不掉就跳过（不是每种生物都有这些 goal）。
+     * <p>★ 必须有上限（{@code axolotl-revive.count}）：不限次数就等于**永不死的单位**，
+     * 回合永远打不完、斩杀线也失去意义。用掉上限后它就能正常被打死。
      */
-    private static final List<com.destroystokyo.paper.entity.ai.GoalKey<?>> PANIC_KEYS = List.of(
+    private final Map<UUID, Integer> axolotlRevives = new HashMap<>();
+
+    /** 正在「假死」的美西螈（假死期间**免疫一切伤害**，否则躺在地上就被补刀，「复活」就不存在）。 */
+    private final java.util.Set<UUID> playingDeadAxolotls = new java.util.HashSet<>();
+
+    /** 本回合拦下的传送次数（按实体类型）—— 诊断用，清场时汇总打印一次。 */
+    private final Map<org.bukkit.entity.EntityType, Integer> blockedTeleports =
+            new java.util.EnumMap<>(org.bukkit.entity.EntityType.class);
+
+    /**
+     * 竞技场里**必须摘掉**的「分心」goal。
+     *
+     * <p>它们全都是 <b>MOVE</b> 类 —— 原版里同一时刻**只能跑一个 MOVE goal**，
+     * 一旦被激活就会把「攻击」顶掉，表现出来就是**这只怪站着/乱走，不攻击**。
+     *
+     * <h2>已经发生过的三起（都是用户实测）</h2>
+     * <ol>
+     *   <li><b>{@code PANIC} 一族</b>（2026-10-11）：毒雾**持续**造成伤害 →
+     *       {@code getLastHurtByMob() != null} 一直成立 → 惊恐 goal 一直抢占行为槽
+     *       （优先级高于我们的索敌 goal）→ 它们只会一直逃跑。</li>
+     *   <li>★ <b>{@code DROWNED_GO_TO_WATER} 等溺尸专属 goal</b>（2026-10-13）：
+     *       原版溺尸**在陆地上**会去找水 / 上岸 / 上浮（{@code DROWNED_GO_TO_WATER}、
+     *       {@code DROWNED_GO_TO_BEACH}、{@code DROWNED_SWIM_UP}），
+     *       而竞技场是**干地**（`test1` 在 y≈92 的石台上）→ 它宁愿满地图找水也不打敌人。
+     *       这就是用户反馈的「**溺尸不攻击**」最可能的机制。</li>
+     *   <li><b>{@code FLEE_SUN} / {@code TRY_FIND_WATER}</b>（同族）：僵尸家族的
+     *       「躲太阳 / 找水」—— 白天同样会顶掉攻击。</li>
+     *   <li>★★ <b>熊猫的「躺平 / 打滚 / 坐下 / 躲怪物」</b>（2026-10-13 用户反馈）：
+     *       这一族**不是**抢 MOVE 槽，而是把攻击 goal 自己的 {@code canUse()} 闸门关上
+     *       （{@code Panda#canPerformAction()}）—— 机制不同、症状一样（闲逛不打人）。
+     *       详见下面列表里的注释。</li>
+     * </ol>
+     *
+     * <p>类型是异构的（{@code GoalKey<Creature>} / {@code GoalKey<Drowned>} / …），
+     * 所以先按 {@code getEntityClass().isInstance(mob)} 过滤，再转型调用；
+     * 摘不掉就跳过（不是每种生物都有这些 goal）。
+     */
+    private static final List<com.destroystokyo.paper.entity.ai.GoalKey<?>> DISTRACTION_KEYS = List.of(
             com.destroystokyo.paper.entity.ai.VanillaGoal.PANIC,
             com.destroystokyo.paper.entity.ai.VanillaGoal.TAMABLE_ANIMAL_PANIC,
             com.destroystokyo.paper.entity.ai.VanillaGoal.FOX_PANIC,
             com.destroystokyo.paper.entity.ai.VanillaGoal.RABBIT_PANIC,
             com.destroystokyo.paper.entity.ai.VanillaGoal.PANDA_PANIC,
-            com.destroystokyo.paper.entity.ai.VanillaGoal.TURTLE_PANIC);
+            com.destroystokyo.paper.entity.ai.VanillaGoal.TURTLE_PANIC,
+            // ★ 溺尸专属：找水 / 上岸 / 上浮
+            com.destroystokyo.paper.entity.ai.VanillaGoal.DROWNED_GO_TO_WATER,
+            com.destroystokyo.paper.entity.ai.VanillaGoal.DROWNED_GO_TO_BEACH,
+            com.destroystokyo.paper.entity.ai.VanillaGoal.DROWNED_SWIM_UP,
+            // ★ 僵尸家族同族：躲太阳 / 找水
+            com.destroystokyo.paper.entity.ai.VanillaGoal.FLEE_SUN,
+            com.destroystokyo.paper.entity.ai.VanillaGoal.TRY_FIND_WATER,
+            // ★★ 海龟一族（2026-10-13 用户反馈「海龟只会站着或闲逛」）：
+            //    原版海龟的 MOVE goal 全是「回老家 / 下水 / 产卵 / 到处游荡」，
+            //    没有一个是「走向敌人」的 → 不摘掉它们、又指望我们补的导航 goal 生效，
+            //    就会互相抢 MOVE 槽（谁优先级高谁跑）。
+            com.destroystokyo.paper.entity.ai.VanillaGoal.TURTLE_GO_TO_WATER,
+            com.destroystokyo.paper.entity.ai.VanillaGoal.TURTLE_GO_HOME,
+            com.destroystokyo.paper.entity.ai.VanillaGoal.TURTLE_TRAVEL,
+            com.destroystokyo.paper.entity.ai.VanillaGoal.TURTLE_LAY_EGG,
+            // ★★ 熊猫一族（2026-10-13 用户反馈「熊猫不打人、只会闲逛」）：
+            //    熊猫的攻击 goal 是 `Panda$PandaAttackGoal`，而它的 canUse 多了一个
+            //    **`panda.canPerformAction()`** 闸门（26.2 反编译）：
+            //    `canPerformAction() = !isOnBack && !isScared && !isEating && !isRolling && !isSitting`
+            //    ⇒ 只要它「躺平 / 打滚 / 坐着吃」，攻击 goal 就**根本不会启动**，
+            //      而它自己的 MOVE goal（打滚 / 坐下 / 躺平）照样跑 —— 看上去就是「闲逛不打人」。
+            //    ★ 这三个 flag 由**基因与道具**决定，所以症状是**随机的**：
+            //      LAZY 基因会躺平、PLAYFUL 基因会打滚（幼崽也行）、
+            //      地上有「熊猫能吃的掉落物」（例如另一只熊猫死后掉的竹子）时会坐下吃。
+            //      2026-10-13 实测：同一场里有的熊猫正常咬死了僵尸，有的基因就只会打滚 —— 对上了。
+            //    另外把 `PANDA_AVOID` 也摘掉：那是 WORRIED 基因「见到怪物 4 格内就跑」，
+            //    在对局里同样表现为「绕着敌人走」。
+            //    ⚠️ 剩一个闸门摘不掉：`isScared()` = `isWorried() && 世界在打雷` ——
+            //      要靠「比赛期间不许雷暴」才能根除，而那会改世界状态（竞技场就在主世界），
+            //      没做；真遇到雷暴+WORRIED 熊猫时它仍会不敢打（已在 dev-log 078 记下）。
+            com.destroystokyo.paper.entity.ai.VanillaGoal.PANDA_LIE_ON_BACK,
+            com.destroystokyo.paper.entity.ai.VanillaGoal.PANDA_ROLL,
+            com.destroystokyo.paper.entity.ai.VanillaGoal.PANDA_SIT,
+            com.destroystokyo.paper.entity.ai.VanillaGoal.PANDA_AVOID);
 
-    /** 摘掉该生物身上所有「惊恐」goal —— 见 {@code unlockAi} 里的详细理由。 */
+    /**
+     * 摘掉该生物身上所有「分心」goal，并返回**真的被摘掉的那些 key 名**。
+     *
+     * <p>★ 返回值的意义：只有把「摘之前它挂了什么」打进日志，事后才能证明因果关系
+     * （2026-10-13 排查「溺尸不攻击」时，缺的正是这条证据 —— 只能猜）。
+     */
     @SuppressWarnings("unchecked")
-    private static void removePanicGoals(com.destroystokyo.paper.entity.ai.MobGoals goals, Mob mob) {
-        for (var key : PANIC_KEYS) {
-            try {
-                goals.removeGoal(mob, (com.destroystokyo.paper.entity.ai.GoalKey<Mob>) (Object) key);
-            } catch (Throwable ignored) {
-                // 该生物没有这个 goal，或 brain 型生物不支持 —— 跳过
+    private static java.util.List<String> removeDistractionGoals(
+            com.destroystokyo.paper.entity.ai.MobGoals goals, Mob mob) {
+        java.util.List<String> removed = new java.util.ArrayList<>();
+        for (var key : DISTRACTION_KEYS) {
+            if (!key.getEntityClass().isInstance(mob)) {
+                continue;   // 该生物类型不可能有这个 goal（例如 PanicGoal 之于溺尸）
             }
+            try {
+                var typed = (com.destroystokyo.paper.entity.ai.GoalKey<Mob>) (Object) key;
+                if (goals.hasGoal(mob, typed)) {
+                    goals.removeGoal(mob, typed);
+                    removed.add(key.getNamespacedKey().getKey());
+                }
+            } catch (Throwable ignored) {
+                // 实际不存在 / API 不支持 —— 跳过
+            }
+        }
+        java.util.Collections.sort(removed);
+        return removed;
+    }
+
+    /**
+     * 「分心 goal」的 key 名清单（供单元测试钉住）——
+     * 想删掉其中任何一个（比如溺尸的 {@code drowned_go_to_water}），测试会立刻变红。
+     */
+    static java.util.List<String> distractionKeyNames() {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (var key : DISTRACTION_KEYS) {
+            out.add(key.getNamespacedKey().getKey());
+        }
+        java.util.Collections.sort(out);
+        return out;
+    }
+
+    /**
+     * 打印该生物**当前还挂着哪些 MOVE goal**（只打 key 名）——「它会不会真的去打」的直接证据。
+     *
+     * <p>为什么要它：2026-10-13 的「溺尸不攻击」排查里，日志只有
+     * {@code 自带近战✗} 这种**推断**，看不到它当时到底挂着哪个 MOVE goal，
+     * 只能靠猜。现在开打时把清单打出来，一眼就能看出「分心 goal 摘干净没有」。
+     */
+    private static String describeMoveGoals(com.destroystokyo.paper.entity.ai.MobGoals goals, Mob mob) {
+        try {
+            java.util.List<String> keys = new java.util.ArrayList<>();
+            for (var g : goals.getAllGoals(mob, com.destroystokyo.paper.entity.ai.GoalType.MOVE)) {
+                keys.add(String.valueOf(g.getKey().getNamespacedKey().getKey()));
+            }
+            java.util.Collections.sort(keys);
+            return keys.toString();
+        } catch (Throwable t) {
+            return "(读不到)";
         }
     }
 
     /**
-     * 该生物是否**自带原版近战模组** —— 决定「载具该不该由我们驱动」。
+     * 「攻击语义」词根 —— 用来判断一只怪**自带哪个会把它带向敌人并出手的 goal**。
      *
-     * <p>判断不了（brain 型生物 / API 抛异常）时按「**没有**」处理：
-     * 那样我们仍会补导航 goal，至少不会让整个组合变成站着不动的活靶。
+     * <h2>★ 为什么不能靠手写白名单（2026-10-13 狐狸事故的根因）</h2>
+     * Paper 的 goal key 是**从 NMS goal 类名推导**出来的
+     * （{@code MobGoalHelper.getKey}：取外部类名做前缀、去掉 {@code Goal}/{@code TargetGoal}
+     * 后缀、转 snake_case）。于是狐狸的近战 goal
+     * {@code Fox$FoxMeleeAttackGoal} ⇒ key = {@code fox_melee_attack}，
+     * **不等于** {@code melee_attack}。
+     *
+     * <p>旧实现维护了一份手写白名单（{@code MELEE_ATTACK/ZOMBIE_ATTACK/…}），
+     * 里面没有狐狸 ⇒ 判定「自带输出✗」⇒ 按 dev-log 073 的规则给它补了
+     * **优先级 0 的 {@link MountDriveGoal}**；而同一时刻**只能跑一个 MOVE 类 goal**
+     * （见 AGENTS.md 坑表）⇒ 狐狸自己的近战 goal 被**永久顶掉**，
+     * 症状就是「走到敌人面前却不咬人」。
+     *
+     * <p>⚠️ 用户当年报的是「狐狸叼着钻石剑不攻击」——**与钻石剑无关**：
+     * 用户同时改了配置（给狐狸加剑），于是把因果看成了装备。
+     * 真正的变量是 dev-log 073 那次「所有自带输出✗的单位都补导航 goal」的放宽。
+     *
+     * <p>白名单写法**天生会漏**（每加一个生物都要补一次，漏一次就废掉一个物种），
+     * 所以改成**扫这只怪实际挂着的 goal**（{@code getAllGoals}，Paper 为每个 NMS goal
+     * 现算 key），按词根判断 —— 狐狸 / 狼 / 铁傀儡 / 劫掠兽这类专属 key 全部自动命中。
      */
-    private static boolean hasNativeMelee(com.destroystokyo.paper.entity.ai.MobGoals goals, Mob mob) {
-        // ⚠️ VanillaGoal.MELEE_ATTACK 的类型是 GoalKey<Creature>，
-        //    而 hasGoal 要求「mob 的类型与 key 的类型一致」，所以必须先收窄到 Creature
-        if (!(mob instanceof org.bukkit.entity.Creature creature)) {
+    static final java.util.Set<String> ATTACK_KEY_TOKENS = java.util.Set.of(
+            "attack", "melee", "ram", "swell", "charge", "spit", "shoot",
+            "spear", "trident", "pounce", "bite", "sting");
+
+    /**
+     * key 名是否带「攻击语义」词根。
+     *
+     * <p>按 {@code _} 切词后逐段**全等**比较（不是 {@code contains}）——
+     * 否则 {@code program} 这类名字会被 {@code ram} 误命中。
+     */
+    static boolean isAttackGoalName(String path) {
+        if (path == null || path.isEmpty()) {
             return false;
         }
+        for (String token : path.split("_")) {
+            if (ATTACK_KEY_TOKENS.contains(token)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 该生物**自带哪个攻击 goal** —— 返回命中的 key 名，都没有则返回 {@code null}。
+     *
+     * <p>返回 key 名而不是 boolean 是刻意的：日志里直接写「✓(fox_melee_attack)」，
+     * 排查时不必再猜「它到底靠什么输出」。
+     *
+     * @return 命中的 goal key 名（如 {@code fox_melee_attack}）；没有则 {@code null}
+     */
+    private static String nativeAttackGoal(com.destroystokyo.paper.entity.ai.MobGoals goals, Mob mob) {
         try {
-            return goals.hasGoal(creature,
-                    com.destroystokyo.paper.entity.ai.VanillaGoal.MELEE_ATTACK);
+            java.util.List<String> hits = new java.util.ArrayList<>();
+            for (var goal : goals.getAllGoals(mob)) {
+                String path = goal.getKey().getNamespacedKey().getKey();
+                if (isAttackGoalName(path)) {
+                    hits.add(path);
+                }
+            }
+            if (hits.isEmpty()) {
+                return null;
+            }
+            java.util.Collections.sort(hits);
+            return hits.get(0);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * 这只怪是不是**纯 brain 型**（一个 goal 都没有 ⇒ 行为全写在 {@code Brain} 里）。
+     *
+     * <p>实测依据（26.2 反编译）：{@code Piglin} / {@code Hoglin} / {@code Zoglin} /
+     * {@code Warden} **都没有 {@code registerGoals()}**，goalSelector 是空的；
+     * 且 {@code Hoglin#getTarget()} 的实现是 {@code getTargetFromBrain()}
+     * ⇒ {@code setTarget} 对它们**是空操作**。
+     *
+     * <p>★ 但**判出 brain 型并不等于不驱动它** —— 见 {@link #VANILLA_AI_TYPES}：
+     * 实测（dev-log 073 的美西螈、本轮第 3 轮）证明我们的 {@link MountDriveGoal}
+     * 对 brain 型**是有效的**（美西螈就是靠它走向敌人的），
+     * 所以只有**用户点名的生物**才交给原版 AI。
+     */
+    private static boolean isBrainOnly(com.destroystokyo.paper.entity.ai.MobGoals goals, Mob mob) {
+        try {
+            for (var goal : goals.getAllGoals(mob)) {
+                var key = goal.getKey();
+                // 我们自己挂的两个 goal 不算「原版 goal」——否则先挂上 EnemyTargetGoal
+                // 再调本方法就会永远返回 false（2026-10-13 实机踩到，见 unlockAi 的注释）。
+                if (key.equals(EnemyTargetGoal.key()) || key.equals(MountDriveGoal.key())) {
+                    continue;
+                }
+                return false;
+            }
+            return true;
         } catch (Throwable t) {
             return false;
         }
+    }
+
+    /**
+     * ★ 走原版导航 AI、**不要**我们的驱动 goal 的生物种类。
+     *
+     * <p>⚠️ **当前为空集**（用户 2026-10-13 晚些时候撤销了疣猪兽那条例外）：
+     * 用户先说「坐骑换成疣猪兽，ai 改为蜘蛛骑士那样的原版导航 ai」，
+     * 在我们实现后又确认「我忘记疣猪兽的特殊性了，**让我们的驱动接手**」。
+     *
+     * <p>所以现在回到统一规则：**没有自带攻击 goal 的单位一律由 `MountDriveGoal` 驱动**
+     * （海龟 / 美西螈 / 疣猪兽 / 僵尸马 / 鸡…都一样）。
+     * 保留这个空集合是为了**留下改动痕迹**：下次再有人想「对某一种生物特殊处理」，
+     * 先看这里为什么被清空 —— 而且疣猪兽骑士的乘客要靠载具走位才打得到人。
+     */
+    private static final java.util.Set<EntityType> VANILLA_AI_TYPES =
+            java.util.EnumSet.noneOf(EntityType.class);
+
+    /** 供单元测试钉住「点名例外当前为空」。 */
+    static java.util.Set<EntityType> vanillaAiTypes() {
+        return java.util.Collections.unmodifiableSet(VANILLA_AI_TYPES);
     }
 
     /**
@@ -1100,6 +1639,8 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
         }
         tagSide(entity, side, false, List.of());        entity.setRemoveWhenFarAway(false);
         entity.setPersistent(true);
+        // ★ 衍生单位同样要按配置放大体型（否则「分裂出来/生出来」的小怪又看不见了）
+        applyRenderScale(entity, plugin.gameConfig());
         // ★ 衍生单位也要免疫僵尸化：`mama` / `mama_plus` 生出来的是**幼体**
         //   （`setBaby()`），而 26.2 里幼体猪灵默认**不免疫**
         //   （`DEFAULT_IMMUNE_TO_ZOMBIFICATION = false`，javap 实测），
@@ -1256,12 +1797,107 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
 
     // ================= 心跳 =================
 
+    /**
+     * ★ 方块怪（史莱姆 / 岩浆怪）接触伤害的**检查节奏**（单位：心跳次数；1 心跳 = 5 tick）。
+     *
+     * <p>2 个心跳 = 10 tick —— 正好是原版受伤后的**无敌帧长度**：查得再密也会被无敌帧吃掉，
+     * 所以按 10 tick 查一次既够快、也不浪费。
+     */
+    private static final int CUBE_TOUCH_HEARTBEATS = 2;
+
+    /** 每只方块怪的接触伤害冷却（单位：心跳次数）。 */
+    private final java.util.Map<UUID, Integer> cubeTouchCooldown = new java.util.HashMap<>();
+
+    /** 每种「类型 + 体型」只打一次接触伤害日志，避免刷屏。 */
+    private final java.util.Set<String> cubeTouchLogged = new java.util.HashSet<>();
+
+    /** 本回合方块怪接触命中次数（清场时打进日志，作为「真的生效了」的证据）。 */
+    private int cubeTouchHits;
+
+    /**
+     * ★ 让**方块怪（史莱姆 / 岩浆怪）的接触伤害对怪物也生效**。
+     *
+     * <h2>为什么必须我们接管（26.2 反编译实测）</h2>
+     * 原版的伤害入口只有两个，且都**排除了普通怪物**：
+     * <ul>
+     *   <li>{@code AbstractCubeMob#playerTouch(Player)} —— 只对**玩家**</li>
+     *   <li>{@code AbstractCubeMob#push(Entity)} —— 只在撞到**铁傀儡**时（源码里显式
+     *       {@code instanceof IronGolem}）</li>
+     * </ul>
+     * 而看起来像「攻击」的 {@code CubeMobAttackGoal.tick()} 只做
+     * {@code lookAt(target)} + 给 {@code CubeMobMoveControl} 设方向 —— **一次伤害都不发**。
+     * ⇒ 用户报的「史莱姆 / 岩浆怪打不动别的怪」是**原版行为**，不是配置漏写。
+     *
+     * <h2>数值与判据全部照抄原版</h2>
+     * 伤害 = {@code ATTACK_DAMAGE} 属性（史莱姆 = 体型 1/2/4；岩浆怪 = 体型 + 2）、
+     * 能不能打 = {@code isDealsDamage()}（**体型 1 的史莱姆不算输出**，岩浆怪不看体型）、
+     * 够不够近 = {@code (bbWidth*2)² + 目标宽度}、还要求有视线 —— 全部见
+     * {@link CubeMobTouch}（纯函数，有单测）。
+     *
+     * <p>⚠️ **只打敌方已登记单位**，绝不碰玩家：玩家那边的原版 {@code playerTouch} 照旧生效，
+     * 我们不去改玩家侧的规则。
+     */
+    private void tickCubeMobTouches() {
+        if (!fighting || cleaned) {
+            return;
+        }
+        for (BattleTracker.TrackedUnit unit : tracker.all()) {
+            Entity e = Bukkit.getEntity(unit.uuid());
+            if (!(e instanceof org.bukkit.entity.AbstractCubeMob cube)
+                    || cube.isDead() || !cube.isValid()) {
+                continue;
+            }
+            int left = cubeTouchCooldown.getOrDefault(unit.uuid(), 0) - 1;
+            if (left > 0) {
+                cubeTouchCooldown.put(unit.uuid(), left);
+                continue;
+            }
+            cubeTouchCooldown.put(unit.uuid(), CUBE_TOUCH_HEARTBEATS);
+
+            boolean magma = cube instanceof org.bukkit.entity.MagmaCube;
+            int size = cube.getSize();
+            if (!CubeMobTouch.dealsDamage(size, magma)) {
+                continue;   // 原版：体型 1 的史莱姆打不动任何东西（连玩家都打不动）
+            }
+            AttributeInstance attack = cube.getAttribute(Attribute.ATTACK_DAMAGE);
+            double damage = CubeMobTouch.damageOf(attack == null ? size : attack.getValue(), magma);
+
+            for (BattleTracker.TrackedUnit other : tracker.all()) {
+                if (other.side() == unit.side() || !other.counted()) {
+                    continue;
+                }
+                Entity raw = Bukkit.getEntity(other.uuid());
+                if (!(raw instanceof LivingEntity target) || target.isDead() || !target.isValid()) {
+                    continue;
+                }
+                if (!cube.getWorld().equals(target.getWorld())) {
+                    continue;
+                }
+                double distSq = cube.getLocation().distanceSquared(target.getLocation());
+                if (distSq > CubeMobTouch.touchRangeSq(cube.getWidth(), target.getWidth())) {
+                    continue;
+                }
+                if (!cube.hasLineOfSight(target)) {
+                    continue;
+                }
+                target.damage(damage, cube);   // 归因给方块怪 ⇒ 击杀播报 / 词条 / 掉落都按它的来
+                cubeTouchHits++;
+                if (cubeTouchLogged.add(cube.getType() + "|" + size)) {
+                    plugin.getLogger().info("[IG] 方块怪接触伤害已接管：" + cube.getType()
+                            + "（体型 " + size + "，每次 " + damage + " 点）→ " + target.getType()
+                            + "；原版只对玩家与铁傀儡生效");
+                }
+            }
+        }
+    }
+
     /** 每 5 tick 调用：兜底收尸 + 判胜负。 */
     public void tick() {
         if (cleaned) {
             return;
         }
         tickGoatRams();
+        tickCubeMobTouches();
         // 兜底：爆炸/被移除没走死亡事件的怪
         for (BattleTracker.TrackedUnit unit : tracker.all()) {
             Entity e = Bukkit.getEntity(unit.uuid());
@@ -1370,6 +2006,144 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
         }
     }
 
+    // ================= 末影人 / 潜影贝：拦传送 =================
+
+    /**
+     * 记录并拦下一次传送（由监听器在 {@code EntityTeleportEvent} 被取消后调用）。
+     *
+     * <h2>为什么要拦</h2>
+     * 末影人（被弹射物命中 / 被看 / 下雨）与潜影贝（受伤时）会**瞬移**，
+     * 结果常常是「**飘出竞技场**、双方再也打不到」，一局就废了。
+     *
+     * <h2>★ 为什么拦传送**不会**破坏「末影人免疫弹射物」</h2>
+     * 原版 {@code Enderman.hurt()} 对投射物的处理是「**瞬移 + 直接 return false**」——
+     * 「不掉血」这一条与瞬移是否成功**无关**，所以取消传送之后：
+     * 箭**依旧打不动它**（免疫保留），只是它**不再飘走**。
+     * 这一点用实测确认过（骨架射它，血量全程不掉、位置不移动，见 dev-log 074）。
+     *
+     * <p>只对本插件接管的单位调用；打印**每个类型仅一次**，避免刷屏；
+     * 清场时汇总一次总数（可对账）。
+     */
+    void recordBlockedTeleport(Entity entity) {
+        var type = entity.getType();
+        int n = blockedTeleports.merge(type, 1, Integer::sum);
+        if (n == 1) {
+            plugin.getLogger().info("[IG] 开始拦截 " + type + " 的传送"
+                    + "（例：" + fmtLoc(entity.getLocation()) + "）—— 防止它飘出竞技场；"
+                    + "同类传送后续不再逐条打印，清场时汇总");
+        }
+    }
+
+    private static String fmtLoc(Location l) {
+        return l == null ? "?" : String.format(java.util.Locale.ROOT, "%.1f,%.1f,%.1f",
+                l.getX(), l.getY(), l.getZ());
+    }
+
+    // ================= 美西螈：假死复活 =================
+
+    /**
+     * 美西螈「假死复活」的处理入口（由监听器在 {@code EntityDamageEvent} 上调用）。
+     *
+     * <h2>用户要求（2026-10-13）</h2>
+     * 「将美西螈改为驯服的美西螈，能否实现假死复活？如果不能则移除」——
+     * 能实现：Paper 的 {@code Axolotl#setPlayingDead(boolean)} 就是原版「假死」姿态
+     * （{@code javap} 实测存在），配一次定时任务即可「复活」。
+     *
+     * <h2>它解决的是什么</h2>
+     * 美西螈是**被动**生物、原版**只攻击白名单**（鳕鱼/溺尸/守卫者/鱿鱼/蝌蚪…），
+     * 对我们的主流怪根本打不出伤害 → 与其当活靶，不如给它「**扛伤害**」的定位。
+     *
+     * <h2>规则</h2>
+     * <ol>
+     *   <li>假死期间 **免疫一切伤害**（否则躺在地上被补刀，「复活」无从谈起）</li>
+     *   <li>**致命伤害**（{@code finalDamage >= health}）才触发假死，且只在还有次数时</li>
+     *   <li>假死 {@code seconds} 秒后复活，血量 = 最大生命 × {@code health-percent}%</li>
+     *   <li>次数用尽后它就能被正常打死 —— **这是保证回合能结束的关键**</li>
+     * </ol>
+     *
+     * @return {@code true} 表示这次伤害已被本机制接管（调用方无需再处理）
+     */
+    boolean handleAxolotlDamage(LivingEntity victim, org.bukkit.event.entity.EntityDamageEvent event) {
+        if (!(victim instanceof org.bukkit.entity.Axolotl axolotl) || sideOf(victim).isEmpty()) {
+            return false;
+        }
+        GameConfig cfg = plugin.gameConfig();
+        // ① 假死期间：免疫
+        if (playingDeadAxolotls.contains(victim.getUniqueId())) {
+            event.setCancelled(true);
+            return true;
+        }
+        int used = axolotlRevives.getOrDefault(victim.getUniqueId(), 0);
+        if (!shouldStartPlayDead(cfg.axolotlReviveEnabled(), used, cfg.axolotlReviveCount(),
+                victim.getHealth(), event.getFinalDamage())) {
+            return false;
+        }
+        // ② 致命伤害 → 进入假死
+        event.setCancelled(true);
+        axolotlRevives.put(victim.getUniqueId(), used + 1);
+        playingDeadAxolotls.add(victim.getUniqueId());
+        int seconds = cfg.axolotlReviveSeconds();
+        try {
+            axolotl.setPlayingDead(true);
+        } catch (Throwable t) {
+            plugin.getLogger().warning("[IG] 设置美西螈假死姿态失败：" + t);
+        }
+        try {
+            // 原版假死会自带生命恢复 I —— 保持观感一致
+            axolotl.addPotionEffect(new PotionEffect(PotionEffectType.REGENERATION,
+                    seconds * 20, 0, false, true, true));
+        } catch (Throwable ignored) {
+            // 不接受效果的实体 → 跳过
+        }
+        plugin.getLogger().info("[IG] 美西螈假死（第 " + (used + 1) + "/"
+                + cfg.axolotlReviveCount() + " 次）→ " + seconds + " 秒后复活");
+        Bukkit.getScheduler().runTaskLater(plugin, () -> reviveAxolotl(axolotl), seconds * 20L);
+        return true;
+    }
+
+    /**
+     * 纯判定：这次伤害是否该触发「假死复活」（**可离线单测**）。
+     *
+     * @param enabled     {@code axolotl-revive.enabled}
+     * @param used        已经用掉的复活次数
+     * @param max         允许的复活次数上限
+     * @param health      当前血量
+     * @param finalDamage 这次伤害的实际数值
+     * @return 是否进入假死
+     */
+    static boolean shouldStartPlayDead(boolean enabled, int used, int max,
+                                       double health, double finalDamage) {
+        return enabled && used < max && finalDamage >= health;
+    }
+
+    /** 假死结束：恢复姿态 + 带血复活。 */
+    private void reviveAxolotl(org.bukkit.entity.Axolotl axolotl) {
+        if (!playingDeadAxolotls.remove(axolotl.getUniqueId())) {
+            return;   // 已被清场处理过
+        }
+        if (!axolotl.isValid() || axolotl.isDead()) {
+            return;   // 回合已结束 / 实体已被清掉 → 不需要复活
+        }
+        try {
+            axolotl.setPlayingDead(false);
+        } catch (Throwable ignored) {
+            // 忽略
+        }
+        double max = 14.0;
+        try {
+            var attr = axolotl.getAttribute(Attribute.MAX_HEALTH);
+            if (attr != null) {
+                max = attr.getValue();
+            }
+        } catch (Throwable ignored) {
+            // 用默认值
+        }
+        double hp = Math.max(1.0, max * plugin.gameConfig().axolotlReviveHealthPercent() / 100.0);
+        axolotl.setHealth(Math.min(hp, max));
+        plugin.getLogger().info("[IG] 美西螈复活（" + String.format(java.util.Locale.ROOT, "%.1f", hp)
+                + " HP）");
+    }
+
     // ================= 清场 =================
 
     /**
@@ -1439,27 +2213,7 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
                     + "已跳过范围内的兜底清理（本插件不做世界级清理）。");
         }
         if (world != null && center != null) {
-            int swept = 0;
-            for (Entity e : world.getEntities()) {
-                if (ours.contains(e.getUniqueId())) {
-                    continue;   // 本插件接管的实体：第 1 步已按 UUID 清掉（无距离限制）
-                }
-                Location at = e.getLocation();
-                if (!CleanupPolicy.shouldRemoveUnmanaged(
-                        e instanceof Player, e instanceof Item,
-                        e instanceof org.bukkit.entity.Projectile, e instanceof Firework,
-                        e instanceof org.bukkit.entity.Enemy,
-                        at.getX() - center.getX(),
-                        at.getY() - center.getY(),
-                        at.getZ() - center.getZ())) {
-                    continue;
-                }
-                // 投射物**不是** LivingEntity，旧实现曾漏掉它们 ——
-                // 实测症状：溺尸丢出的三叉戟、骷髅射出的箭插在地上不消失。
-                // 现在它们与「未接管怪物」共用同一条半径规则，而不是世界级清理。
-                e.remove();
-                swept++;
-            }
+            int swept = sweepArenaUnmanaged(center, ours);
             if (swept > 0) {
                 plugin.getLogger().info("[IG] 已清理竞技场半径 "
                         + (long) CleanupPolicy.ARENA_RADIUS + " 格内的 " + swept
@@ -1479,6 +2233,23 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
 
         tracker.clear();
         brainMobs.clear();
+        axolotlRevives.clear();
+        playingDeadAxolotls.clear();
+        // 末影人 / 潜影贝的传送拦截汇总（每个类型只打过一次「开始拦截」，这里给总数）
+        if (!blockedTeleports.isEmpty()) {
+            StringBuilder sb = new StringBuilder();
+            blockedTeleports.forEach((t, c) -> sb.append(t).append('×').append(c).append(' '));
+            plugin.getLogger().info("[IG] 本回合拦下的传送：" + sb.toString().trim());
+            blockedTeleports.clear();
+        }
+        // 方块怪接触伤害汇总：没接管的话史莱姆/岩浆怪对怪物是 0 输出（原版只打玩家与铁傀儡），
+        // 所以这个数字是「接管真的生效了」的直接证据。
+        if (cubeTouchHits > 0) {
+            plugin.getLogger().info("[IG] 本回合方块怪接触命中：" + cubeTouchHits + " 次");
+        }
+        cubeTouchHits = 0;
+        cubeTouchCooldown.clear();
+        cubeTouchLogged.clear();
         if (current == this) {
             current = null;
         }
@@ -1535,13 +2306,79 @@ public final class BattleService implements EnemyTargetGoal.EnemyLocator {
         return arena;
     }
 
-    /** 给玩家发一条来自 display.yml 的消息。 */
+    /**
+     * 给**本局参与者**发一条来自 display.yml 的消息。
+     *
+     * <h2>★ 为什么不再用 {@code Bukkit.getOnlinePlayers()}（2026-10-13 实测缺陷）</h2>
+     * 用户反馈：「毒雾播报会播报给游戏外的玩家」。旧实现遍历**全服在线玩家**，
+     * 于是一条只跟本局有关的播报发给了在大厅、在别的玩法里的所有人。
+     * 现在收件人由 {@link #audience()} 界定；**没有收件人就只进控制台**，
+     * 绝不退回全服播报（与铁律 10 对「范围」的要求同一口径）。
+     */
     public void broadcast(String messagePath, Map<String, String> placeholders) {
         DisplayConfig display = plugin.displayConfig();
         Component c = display.render(messagePath, placeholders);
-        for (var pe : Bukkit.getOnlinePlayers().stream().map(p -> p).toList()) {
-            pe.sendMessage(c);
+        int sent = 0;
+        for (Player p : audience()) {
+            p.sendMessage(c);
+            sent++;
         }
         Bukkit.getConsoleSender().sendMessage(c);
+        if (sent == 0) {
+            plugin.getLogger().info("[IG] 该播报没有参与者接收（仅记录到控制台）");
+        }
+    }
+
+    /**
+     * 本条播报的**收件人**（★ 安全边界，别改回全服）。
+     *
+     * <ol>
+     *   <li>有正式对局 → 本局参与者：**人机**与已 {@code /mgc leave} **退出**的人排除；
+     *       <b>已出局但仍在观战</b>的人要收到（他们还在看这一局）</li>
+     *   <li>没有正式对局（例如 {@code /ig debug battle} 的独立战斗）→ 退化成
+     *       <b>竞技场半径 {@link CleanupPolicy#ARENA_RADIUS} 格内</b>的玩家 ——
+     *       与清场同一个范围口径，**仍然有界**</li>
+     * </ol>
+     */
+    private java.util.List<Player> audience() {
+        var round = plugin.activeRound().orElse(null);
+        if (round != null) {
+            java.util.List<Player> out = new java.util.ArrayList<>();
+            for (io.mczju.infernalguess.game.GamePlayer gp : round.players()) {
+                if (!shouldReceiveBroadcast(gp.isBot(), gp.isExited())) {
+                    continue;
+                }
+                Player p = Bukkit.getPlayer(gp.uuid());
+                if (p != null && p.isOnline()) {
+                    out.add(p);
+                }
+            }
+            return out;
+        }
+        Location center = arenaCleanupCenter();
+        if (world == null || center == null) {
+            return java.util.List.of();
+        }
+        double r2 = CleanupPolicy.ARENA_RADIUS * CleanupPolicy.ARENA_RADIUS;
+        java.util.List<Player> out = new java.util.ArrayList<>();
+        for (Player p : world.getPlayers()) {
+            if (p.getLocation().distanceSquared(center) <= r2) {
+                out.add(p);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 某参与者是否应收到本局播报（**纯判定，可离线单测**）。
+     *
+     * <p>规则：**人机**没有客户端；已 {@code /mgc leave} **退出**的人不该再收到本局消息；
+     * 其余（含**已出局但仍在观战**的人）都要收到 —— 他们还在看这一局。
+     *
+     * @param bot    是否为人机
+     * @param exited 是否已退出本局（{@code /mgc leave} 或掉线后的标记）
+     */
+    static boolean shouldReceiveBroadcast(boolean bot, boolean exited) {
+        return !bot && !exited;
     }
 }

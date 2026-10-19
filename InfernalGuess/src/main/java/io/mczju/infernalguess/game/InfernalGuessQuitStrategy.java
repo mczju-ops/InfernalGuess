@@ -88,6 +88,12 @@ public final class InfernalGuessQuitStrategy extends AbstractPlayerQuitStrategy 
         try {
             if (game instanceof InfernalGuessGame ig && shouldAbortGame(ig.getPlayers().size())) {
                 ig.abortIfNoPlayersLeft("最后一名玩家离开了对局");
+            } else if (game instanceof InfernalGuessGame ig) {
+                // ★ 显式记一笔「为什么没中止」——用户报「/mgc leave 后 mgc 菜单用不了」时，
+                //   第一个要回答的问题就是「那局到底结束了没有」。MGC 只在 WAITING 阶段
+                //   自己收尾，RUNNING 阶段必须我们动手，所以这条日志是排查的起点。
+                plug.getLogger().info("[IG] 退出判定：对局继续（剩余真人 "
+                        + ig.getPlayers().size() + " 名）—— 房间仍占用，属正常");
             }
         } catch (Throwable t) {
             plug.getLogger().warning("[IG] 中止空对局失败：" + t);

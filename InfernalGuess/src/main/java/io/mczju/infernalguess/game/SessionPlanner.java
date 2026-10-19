@@ -36,29 +36,28 @@ public final class SessionPlanner {
     /**
      * 选择竞技场。
      *
-     * <p>优先级：**房间指定且完整** → **从可用竞技场里随机挑一个** → 空。
+     * <p>规则（2026-10-13 按用户要求改成这样）：
+     * <ol>
+     *   <li>没有可用竞技场 → 空</li>
+     *   <li>只有 1 个可用 → 用它</li>
+     *   <li><b>多个可用 → 一律随机</b>（由本局种子派生 ⇒ 同一局可复现，便于复盘）</li>
+     * </ol>
      *
-     * <p>用户需求第 2 条原文：「随机选择一个**对称竞技场**」——
-     * 所以多个可用竞技场时是**随机**而非取第一个。
-     * 随机由本局种子派生，因此**同一局内可复现**（便于复盘与调试）。
+     * <h2>★ 为什么不再「房间指定优先」（用户 2026-10-13）</h2>
+     * 用户原话：「在有多个竞技场时**随机**选择玩家加入的竞技场，
+     * **而不是按顺序依次选择**」。
      *
-     * @param roomArenaName 房间上配置的竞技场名，可为 {@code null}
+     * <p>旧实现是「房间的 {@code arenaName} 优先」。于是当房间与竞技场配成一对一
+     * （{@code default}→A、{@code default1}→B…）时，MGC 按顺序把玩家分进房间 ⇒
+     * 玩家看到的是 **A、B、A、B 的固定顺序**，与「每次随机」正相反
+     * （现场 {@code default} 房间就钉着 {@code arenaName: test1}）。
+     *
+     * <p>现在多竞技场时房间的 {@code arenaName} **不再强制**。该字段仍保留在房间类里
+     * （老房间 json 里有它，删字段没有收益），见 {@code InfernalGuessRoom#arenaName}。
      */
-    public static Optional<ArenaConfig.Arena> selectArena(ArenaConfig arenas, String roomArenaName) {
-        return selectArena(arenas, roomArenaName, 0L);
-    }
-
-    /** 带种子的竞技场选择（同种子结果相同）。 */
-    public static Optional<ArenaConfig.Arena> selectArena(ArenaConfig arenas,
-                                                          String roomArenaName, long seed) {
+    public static Optional<ArenaConfig.Arena> selectArena(ArenaConfig arenas, long seed) {
         if (arenas == null) {
             return Optional.empty();
-        }
-        if (roomArenaName != null && !roomArenaName.isBlank()) {
-            var byRoom = arenas.get(roomArenaName).orElse(null);
-            if (byRoom != null && byRoom.isComplete()) {
-                return Optional.of(byRoom);
-            }
         }
         List<ArenaConfig.Arena> playable = arenas.playable();
         if (playable.isEmpty()) {
@@ -67,11 +66,16 @@ public final class SessionPlanner {
         if (playable.size() == 1) {
             return Optional.of(playable.get(0));
         }
-        // ★ 随机选择（用户第 2 条）；派生自本局种子，可复现
+        // ★ 随机选择；派生自本局种子，可复现
         int idx = new io.mczju.infernalguess.run.SeededRng(seed)
                 .derive(7_777_777L)
                 .nextInt(playable.size());
         return Optional.of(playable.get(idx));
+    }
+
+    /** 无种子版本（等价于 {@code seed = 0}；仅供调试与测试）。 */
+    public static Optional<ArenaConfig.Arena> selectArena(ArenaConfig arenas) {
+        return selectArena(arenas, 0L);
     }
 
     /**
@@ -81,14 +85,14 @@ public final class SessionPlanner {
      * @throws IllegalStateException 没有可用竞技场
      */
     public static SessionPlan plan(ArenaConfig arenas, GameConfig cfg,
-                                   String roomArenaName, List<Participant> realPlayers) {
-        return plan(arenas, cfg, roomArenaName, realPlayers, 0L);
+                                   List<Participant> realPlayers) {
+        return plan(arenas, cfg, realPlayers, 0L);
     }
 
     /** 组装一局（带本局种子，用于随机挑竞技场）。 */
-    public static SessionPlan plan(ArenaConfig arenas, GameConfig cfg, String roomArenaName,
+    public static SessionPlan plan(ArenaConfig arenas, GameConfig cfg,
                                    List<Participant> realPlayers, long seed) {
-        ArenaConfig.Arena arena = selectArena(arenas, roomArenaName, seed).orElseThrow(
+        ArenaConfig.Arena arena = selectArena(arenas, seed).orElseThrow(
                 () -> new IllegalStateException(
                         "没有可用的竞技场。请用 /ig arena create <名称> 并用调试 UI 绑定足够点位。"));
 

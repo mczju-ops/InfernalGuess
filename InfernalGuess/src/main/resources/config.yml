@@ -77,8 +77,8 @@ ultimate:
   shield-until-round: 7           # 第 7 回合开始时护盾消失
   overtime: true                  # 第 10 回合后加时，直到唯一胜者
 bot:
-  enabled: false
-  bots: 0
+  enabled: true                   # ★ 2026-10-13 用户要求：默认开启电脑玩家（单人也能开局）
+  bots: 9                         # ★ 默认 9 个（配 max-players: 10 ⇒ 单人局正好凑满 10 人）
   names: ["[AI] 马里奥绿叔", "[AI] 若只兔头", "[AI] 大木登登子", "[AI] 白菜吃米洛", "[AI] 丰川祥子desuwa", "[AI] 魔去ZC目录", "[AI] 伞兵一号", "[AI] 科比·布莱恩特", "[AI] 屁屁卡丘"]
 
 # ---------------- 竞技场与世界 ----------------
@@ -89,6 +89,9 @@ arena:
 world:
   difficulty: NORMAL              # PEACEFUL | EASY | NORMAL | HARD
   time-lock: none                 # day | noon | night | midnight | none
+  restore-on-end: true            # 对局结束时**还原**本插件改过的世界级设置（难度/游戏规则/时间）
+                                  # 竞技场常常就在主世界：true = 打完还原成原样（默认，安全）；
+                                  # false = 让这些设置常驻（例如希望 mobGriefing 一直关着）
   gamerules:                      # 逐条写入竞技场所在世界
     doMobLoot: false
     doMobSpawning: false
@@ -96,11 +99,33 @@ world:
     naturalRegeneration: false
     keepInventory: true
 
+# ---------------- 美西螈「假死复活」（2026-10-13 用户要求）----------------
+# 背景：美西螈是**被动**生物，原版**只攻击白名单目标**（鳕鱼/溺尸/守卫者/鱿鱼/蝌蚪…），
+# 对我们的主流怪（僵尸/骷髅/蜘蛛）**永远打不出伤害** → 与其当个站着不动的活靶，
+# 不如给它一个「扛伤害」的定位：**致命伤害时假死，N 秒后带血复活**。
+axolotl-revive:
+  enabled: true                   # false = 关掉（美西螈就只是普通被动单位）
+  count: 1                        # 每只美西螈每回合可复活次数（★ 必须有上限，否则打不完）
+  seconds: 5                      # 假死持续秒数（期间免疫一切伤害）
+  health-percent: 50              # 复活后血量 = 最大生命的这个百分比
+
 # ---------------- 战斗 ----------------
 battle:
   follow-range: 64.0              # 索敌距离，需覆盖整个竞技场
   mob-attributes:
-    scale: 1.0
+    scale: 1.0                    # 全局体型倍率（所有单位都乘它；1.0 = 原版大小）
+    # ★ 按生物类型**额外**放大 —— 只为「让远处也看得见」：
+    #   客户端剔除实体的公式是「距离 < (包围盒三边均值 × 64 × 客户端的实体渲染距离系数)²」
+    #   （26.2 反编译实测），所以包围盒越小、可见距离越短：
+    #     · 蠹虫 / 末影螨 0.4×0.3×0.4 ⇒ 原版只有约 23.5 格（48×48 场地对角约 68 格 ⇒ 场那头看不见）
+    #     · 狐狸 0.6×0.7×0.6 ⇒ 原版约 40.5 格（用户要求调到 48 格左右）
+    #   倍率**只影响外观与判定框大小，不改血量/伤害**；1.0 = 原版大小。
+    #   想自己精调：倍率 = 目标距离 ÷ (包围盒三边均值 × 64)。
+    #   ⚠️ 改这里的值**对已经在跑的存档无效**（现场 config.yml 里的值优先，迁移只补缺失键）。
+    scale-overrides:
+      silverfish: 2.0             # 23.5 格 → 约 47 格（用户 2026-10-13：×3 太大，×2 差不多）
+      endermite: 2.0              # 同上
+      fox: 1.19                   # 40.5 格 → 约 48 格
     clear-random-equipment: true  # 强制清空原版随机盔甲，再按 mob-groups 穿戴
     prevent-item-pickup: true     # 防怪物捡地上的东西
   cleanup-delay-ticks: 5          # 清场延迟（分裂子体晚 1 tick 生成）

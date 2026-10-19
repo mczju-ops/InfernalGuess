@@ -88,8 +88,38 @@ public final class InfernalGuessPlugin extends JavaPlugin {
         this.scoreboardService = new io.mczju.infernalguess.game.ScoreboardService(this);
 
         registerWithMgc();
+        registerLeaderboards();
 
         getLogger().info("InfernalGuess 已启用（回合流程 / 下注结算 / 记分板已接入）");
+    }
+
+    /**
+     * 注册两个排行榜（1.0.1 用户需求 1）。
+     *
+     * <p>独立于 {@link #registerWithMgc()} 的 try/catch：排行榜出问题**不能**
+     * 连累 {@code ensureDefaultRoom()}（那会让 {@code /mgc join} 直接不可用）。
+     *
+     * <p>展示实体不在代码里生成 —— 用 MGC 的现成通道：
+     * <pre>
+     *   /mgcop leaderboard create infernalguess_ranked &lt;展示实体ID&gt;
+     *   /mgcop leaderboard edit   infernalguess_ranked &lt;展示实体ID&gt;   ← 菜单里选位置
+     * </pre>
+     */
+    private void registerLeaderboards() {
+        try {
+            MCZJUGameCore.getLeaderboardManager().registerLeaderboard(
+                    io.mczju.infernalguess.game.InfernalGuessRankedLeaderboard.ID,
+                    io.mczju.infernalguess.game.InfernalGuessRankedLeaderboard.class);
+            MCZJUGameCore.getLeaderboardManager().registerLeaderboard(
+                    io.mczju.infernalguess.game.InfernalGuessFundsLeaderboard.ID,
+                    io.mczju.infernalguess.game.InfernalGuessFundsLeaderboard.class);
+            getLogger().info("已注册排行榜："
+                    + io.mczju.infernalguess.game.InfernalGuessRankedLeaderboard.ID + "、"
+                    + io.mczju.infernalguess.game.InfernalGuessFundsLeaderboard.ID
+                    + "（用 /mgcop leaderboard create <id> <实体ID> 放置展示实体）");
+        } catch (Throwable t) {
+            getLogger().warning("注册排行榜失败（不影响对局）：" + t);
+        }
     }
 
     /**
@@ -184,9 +214,27 @@ public final class InfernalGuessPlugin extends JavaPlugin {
     private void loadAllConfigs() {
         reloadConfig(); // 重新从磁盘读 config.yml
         this.gameConfig = GameConfig.load(getConfig());
+        validateScaleOverrideIds(this.gameConfig);
         this.mobGroupConfig = MobGroupConfig.load(this);
         this.displayConfig = DisplayConfig.load(this);
         this.arenaConfig = ArenaConfig.load(this);
+    }
+
+    /**
+     * ★ 核对 {@code battle.mob-attributes.scale-overrides} 里的生物 id 是否真的存在。
+     *
+     * <p>为什么不在 {@link GameConfig} 里查：那一层要能在**离线单测**中加载
+     * （{@code ShippedConfigTest} 会读出厂 {@code config.yml}），而
+     * {@code Registry.ENTITY_TYPE} 只有服务端可用 ⇒ 配置层只收字符串，**启动时**在这里
+     * 用注册表核对。写错 id 就警告，**不静默**（否则又是一条「配置写了却没生效」）。
+     */
+    private void validateScaleOverrideIds(GameConfig cfg) {
+        for (String id : cfg.scaleOverrides().keySet()) {
+            if (org.bukkit.Registry.ENTITY_TYPE.get(org.bukkit.NamespacedKey.minecraft(id)) == null) {
+                getLogger().warning("config.yml 的 battle.mob-attributes.scale-overrides." + id
+                        + " 不是合法的生物类型 id，已忽略（例：silverfish / endermite / fox）");
+            }
+        }
     }
 
     /**
@@ -345,9 +393,21 @@ public final class InfernalGuessPlugin extends JavaPlugin {
             java.util.List<String> pruned = content
                     ? io.mczju.infernalguess.config.ConfigMerge.pruneObsolete(defaults, disk)
                     : java.util.List.of();
+            // ★ 退役整组：只靠 pruneObsolete 删不掉（它刻意保留「出厂没有的顶层对象」
+            //   以免误删玩家自造的组），所以退役名单写在出厂文件的 retired-groups: 里。
+            java.util.List<String> retired = content
+                    ? io.mczju.infernalguess.config.ConfigMerge.pruneRetiredGroups(
+                            disk, "mob_groups", defaults.getStringList("retired-groups"))
+                    : java.util.List.of();
             java.util.List<String> added = content
                     ? io.mczju.infernalguess.config.ConfigMerge.overwriteShared(defaults, disk)
                     : io.mczju.infernalguess.config.ConfigMerge.merge(defaults, disk);
+
+            if (!retired.isEmpty()) {
+                getLogger().warning(name + " 里有 " + retired.size()
+                        + " 个**出厂已退役**的怪组，已删除（否则「删掉的怪」会继续刷出来）："
+                        + String.join(", ", retired));
+            }
 
             if (!pruned.isEmpty()) {
                 getLogger().warning(name + " 里有 " + pruned.size()
@@ -357,7 +417,7 @@ public final class InfernalGuessPlugin extends JavaPlugin {
                         + "旧的 amount.min/max 会把数量悄悄按死在很小的值上。");
             }
 
-            if (!added.isEmpty() || !pruned.isEmpty()) {
+            if (!added.isEmpty() || !pruned.isEmpty() || !retired.isEmpty()) {
                 if (content) {
                     // 内容文件会覆盖用户改过的值 → 先备份，并在日志里说清楚
                     java.io.File backup = new java.io.File(getDataFolder(), name + ".bak");
@@ -372,6 +432,7 @@ public final class InfernalGuessPlugin extends JavaPlugin {
                 getLogger().info(name + (content ? " 已按出厂值升级 " : " 已补齐 ")
                         + added.size() + " 个键"
                         + (pruned.isEmpty() ? "" : "、删除 " + pruned.size() + " 个废弃键")
+                        + (retired.isEmpty() ? "" : "、退役 " + retired.size() + " 个怪组")
                         + (content ? "（游戏内容以出厂值为准；原文件已备份为 " + name + ".bak）"
                         : "（保留你原有的值）")
                         + "：" + String.join(", ", added));

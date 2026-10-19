@@ -34,7 +34,14 @@ public final class MenuItemService {
 
     public static final String KIND_BET_MENU = "bet-menu";
 
-    /** 快捷栏投放位置（第 9 格），避免占用第 1 格。 */
+    /**
+     * 快捷栏投放位置（第 9 格 = 槽位 8）。
+     *
+     * <p>⚠️ **槽位 8 是 MGC 大厅菜单时钟的固定槽**（{@code LobbyMenuClock.FIXED_SLOT = 8}，
+     * 26.2 反编译实测）。所以我们在这里**绝不覆盖**已有物品：{@link #give} 发现该格被占用时
+     * 会退回 {@code addItem}（放到第一个空格）—— 否则会把大厅菜单顶掉，
+     * 表现为「离局后点不到菜单」（用户 2026-10-13 反馈的方向）。
+     */
     private static final int HOTBAR_SLOT = 8;
 
     private final InfernalGuessPlugin plugin;

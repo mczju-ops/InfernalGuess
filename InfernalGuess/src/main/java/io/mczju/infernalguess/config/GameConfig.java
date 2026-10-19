@@ -1,9 +1,12 @@
 package io.mczju.infernalguess.config;
 
+import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.entity.EntityType;
 
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -54,10 +57,46 @@ public final class GameConfig {
     private final String timeLock;
     private final String[] worldTimeLockValues;
     private final Map<String, Boolean> gamerules;
+    /**
+     * 对局结束时是否**还原**本插件改动过的世界级设置（难度 / 游戏规则 / 时间）。
+     *
+     * <p>★ 2026-10-13 新增：竞技场常常就建在**主世界**（现场实测），
+     * 「只写不还」等于在主世界留下永久副作用。默认 {@code true}：
+     * 想让它常驻（例如希望 {@code mobGriefing: false} 一直生效）就设成 {@code false}。
+     */
+    private final boolean worldRestoreOnEnd;
+    /**
+     * 美西螈「假死复活」：致命伤害时改为假死，N 秒后带血复活（2026-10-13 用户要求）。
+     *
+     * <p>它解决的是「美西螈**打不出伤害**」这个死结（原版只攻击白名单目标）——
+     * 让它成为一个**能拖时间/扛伤害**的单位，而不是一个站着不动的活靶。
+     */
+    private final boolean axolotlReviveEnabled;
+    /** 每只美西螈能复活几次（0 = 关）。**必须有上限**，否则全场打不完。 */
+    private final int axolotlReviveCount;
+    /** 假死持续秒数。 */
+    private final int axolotlReviveSeconds;
+    /** 复活后血量（占最大生命的百分比）。 */
+    private final int axolotlReviveHealthPercent;
 
     // ---------- 战斗 ----------
     private final double followRange;
     private final double mobScale;
+
+    /**
+     * ★ 按生物类型**额外**放大的倍率（{@code battle.mob-attributes.scale-overrides}）。
+     *
+     * <p>键是**原版生物 id**（如 {@code silverfish} / {@code endermite} / {@code fox}），
+     * 值是倍率。用途只有一个：把「包围盒太小 ⇒ 远处会被客户端剔除」的单位放大，
+     * 让观众在竞技场任何位置都看得见（公式与依据见
+     * {@link io.mczju.infernalguess.battle.RenderCulling}）。
+     *
+     * <p>⚠️ 这里**刻意不查 {@code Registry.ENTITY_TYPE}**：本类要能在**离线单测**里加载
+     * （{@code ShippedConfigTest} 会读出厂 config.yml），而注册表只有服务端有。
+     * id 是否合法由 {@code InfernalGuessPlugin} 在启动时用注册表核对并告警。
+     */
+    private final Map<String, Double> scaleOverrides;
+
     private final boolean clearRandomEquipment;
     private final boolean preventItemPickup;
     private final int cleanupDelayTicks;
@@ -98,8 +137,14 @@ public final class GameConfig {
         this.timeLock = b.timeLock;
         this.worldTimeLockValues = b.worldTimeLockValues;
         this.gamerules = b.gamerules;
+        this.worldRestoreOnEnd = b.worldRestoreOnEnd;
+        this.axolotlReviveEnabled = b.axolotlReviveEnabled;
+        this.axolotlReviveCount = b.axolotlReviveCount;
+        this.axolotlReviveSeconds = b.axolotlReviveSeconds;
+        this.axolotlReviveHealthPercent = b.axolotlReviveHealthPercent;
         this.followRange = b.followRange;
         this.mobScale = b.mobScale;
+        this.scaleOverrides = b.scaleOverrides;
         this.clearRandomEquipment = b.clearRandomEquipment;
         this.preventItemPickup = b.preventItemPickup;
         this.cleanupDelayTicks = b.cleanupDelayTicks;
@@ -206,11 +251,18 @@ public final class GameConfig {
             }
             rules.put(key, bool);
         }
+        b.worldRestoreOnEnd = ConfigReader.requireBoolean(cfg, FILE, "world.restore-on-end");
+        b.axolotlReviveEnabled = ConfigReader.requireBoolean(cfg, FILE, "axolotl-revive.enabled");
+        b.axolotlReviveCount = ConfigReader.requireInt(cfg, FILE, "axolotl-revive.count", 0, 10);
+        b.axolotlReviveSeconds = ConfigReader.requireInt(cfg, FILE, "axolotl-revive.seconds", 1, 60);
+        b.axolotlReviveHealthPercent =
+                ConfigReader.requireInt(cfg, FILE, "axolotl-revive.health-percent", 1, 100);
         b.gamerules = Map.copyOf(rules);
 
         // ---- 战斗 ----
         b.followRange = ConfigReader.requireDouble(cfg, FILE, "battle.follow-range", 1.0, 256.0);
         b.mobScale = ConfigReader.requireDouble(cfg, FILE, "battle.mob-attributes.scale", 0.05, 10.0);
+        b.scaleOverrides = readScaleOverrides(cfg);
         b.clearRandomEquipment = ConfigReader.requireBoolean(cfg, FILE, "battle.mob-attributes.clear-random-equipment");
         b.preventItemPickup = ConfigReader.requireBoolean(cfg, FILE, "battle.mob-attributes.prevent-item-pickup");
         b.cleanupDelayTicks = ConfigReader.requireInt(cfg, FILE, "battle.cleanup-delay-ticks", 0, 200);
@@ -224,6 +276,31 @@ public final class GameConfig {
         b.debugEnabled = ConfigReader.requireBoolean(cfg, FILE, "debug.enabled");
 
         return new GameConfig(b);
+    }
+
+    /**
+     * 读 {@code battle.mob-attributes.scale-overrides}（生物 id → 额外倍率）。
+     *
+     * <p>只校验**数值范围**（原版 {@code minecraft:scale} 属性的定义域 {@code [0.0625, 16.0]}）；
+     * id 是否真的存在交给启动时的注册表核对（原因见字段注释）。
+     */
+    private static Map<String, Double> readScaleOverrides(FileConfiguration cfg) {
+        ConfigurationSection sec =
+                cfg.getConfigurationSection("battle.mob-attributes.scale-overrides");
+        if (sec == null) {
+            return Map.of();
+        }
+        Map<String, Double> out = new LinkedHashMap<>();
+        for (String key : sec.getKeys(false)) {
+            String path = "battle.mob-attributes.scale-overrides." + key;
+            double value = sec.getDouble(key, 1.0);
+            if (!(value >= 0.0625 && value <= 16.0)) {
+                throw new ConfigError(FILE, path,
+                        "倍率必须在 0.0625~16.0 之间（原版 scale 属性范围），实际 " + value);
+            }
+            out.put(key.toLowerCase(Locale.ROOT), value);
+        }
+        return Map.copyOf(out);
     }
 
     // ================= 访问器 =================
@@ -317,9 +394,37 @@ public final class GameConfig {
     public String worldDifficulty() { return worldDifficulty; }
     public String timeLock() { return timeLock; }
     public Map<String, Boolean> gamerules() { return gamerules; }
+    public boolean worldRestoreOnEnd() { return worldRestoreOnEnd; }
+
+    // ---------- 美西螈「假死复活」（2026-10-13 用户要求）----------
+    public boolean axolotlReviveEnabled() { return axolotlReviveEnabled; }
+    public int axolotlReviveCount() { return axolotlReviveCount; }
+    public int axolotlReviveSeconds() { return axolotlReviveSeconds; }
+    public int axolotlReviveHealthPercent() { return axolotlReviveHealthPercent; }
 
     public double followRange() { return followRange; }
     public double mobScale() { return mobScale; }
+
+    /**
+     * ★ 该生物类型在本局里的**最终体型倍率** = 全局 {@code scale} × 该类型的
+     * {@code scale-overrides}（再夹到原版 {@code scale} 属性的值域）。
+     *
+     * <p>装配时应用到 {@code Attribute.SCALE}。用途：把包围盒太小的单位放大，
+     * 免得它们在竞技场那头被**客户端**剔除（见
+     * {@link io.mczju.infernalguess.battle.RenderCulling}）。
+     */
+    public double scaleFor(String entityTypeId) {
+        double value = mobScale * scaleOverrides.getOrDefault(entityTypeId.toLowerCase(Locale.ROOT), 1.0);
+        return Math.max(0.0625, Math.min(16.0, value));
+    }
+
+    /** 见 {@link #scaleFor(String)}；服务端侧按 {@link EntityType} 取原版 id 再查。 */
+    public double scaleFor(EntityType type) {
+        return scaleFor(type.getKey().getKey());
+    }
+
+    /** 按类型配置的放大倍率表（只读，供启动核对与测试）。 */
+    public Map<String, Double> scaleOverrides() { return scaleOverrides; }
     public boolean clearRandomEquipment() { return clearRandomEquipment; }
     public boolean preventItemPickup() { return preventItemPickup; }
     public int cleanupDelayTicks() { return cleanupDelayTicks; }
@@ -436,7 +541,11 @@ public final class GameConfig {
         String worldDifficulty, timeLock;
         String[] worldTimeLockValues;
         Map<String, Boolean> gamerules;
+        boolean worldRestoreOnEnd;
+        boolean axolotlReviveEnabled;
+        int axolotlReviveCount, axolotlReviveSeconds, axolotlReviveHealthPercent;
         double followRange, mobScale;
+        Map<String, Double> scaleOverrides = Map.of();
         boolean clearRandomEquipment, preventItemPickup;
         int cleanupDelayTicks;
         boolean protectMenuItem;

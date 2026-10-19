@@ -678,7 +678,7 @@ public final class InfernalGuessCommand implements CommandExecutor, TabCompleter
      */
     private boolean battleCmd(CommandSender sender, String[] args) {
         if (args.length < 3) {
-            usage(sender, "/ig debug battle <start <竞技场> [回合] [seed] | fight | status | stop>");
+            usage(sender, "/ig debug battle <start <竞技场> [回合] [seed] | fight | status | stop | mutual>");
             return true;
         }
         String action = args[2].toLowerCase(Locale.ROOT);
@@ -750,6 +750,17 @@ public final class InfernalGuessCommand implements CommandExecutor, TabCompleter
                         sender.sendMessage(Component.text("▶ 已归还 AI 并挂上索敌 Goal。",
                                 NamedTextColor.GREEN));
                     }, () -> sender.sendMessage(Component.text("当前没有战斗。", NamedTextColor.RED)));
+            // ★ 仅供调试：强制全场同时死亡 → 立刻走「同归于尽」判定
+            //   （用来核对 `真平局` 与 `苦力怕判胜` 两条分支，它们自然发生只能靠运气）
+            case "mutual" -> plugin.activeRound().ifPresentOrElse(rm -> {
+                if (rm.forceMutualDeathForDebug()) {
+                    sender.sendMessage(Component.text("已强制全场同时死亡，详见控制台日志"
+                            + "（真平局 / 苦力怕判胜）。", NamedTextColor.GREEN));
+                } else {
+                    sender.sendMessage(Component.text("当前不在战斗中（需要回合处于 FIGHTING 阶段）。",
+                            NamedTextColor.RED));
+                }
+            }, () -> sender.sendMessage(Component.text("当前没有对局。", NamedTextColor.RED)));
             case "status" -> io.mczju.infernalguess.battle.BattleService.current()
                     .ifPresentOrElse(b -> {
                         var t = b.tracker();
@@ -834,6 +845,15 @@ public final class InfernalGuessCommand implements CommandExecutor, TabCompleter
                                         }
                                         extra.append(']');
                                     }
+                                    // ★ 体型倍率 + 判定框宽度：用来验证 config.yml 的
+                                    //   `battle.mob-attributes.scale-overrides` 真的落地了
+                                    //   （SCALE 属性会触发 refreshDimensions ⇒ 宽度也该跟着变大）。
+                                    var scaleAttr = le.getAttribute(org.bukkit.attribute.Attribute.SCALE);
+                                    double scale = scaleAttr == null ? 1.0 : scaleAttr.getValue();
+                                    if (Math.abs(scale - 1.0) > 1e-6) {
+                                        extra.append(String.format(Locale.ROOT,
+                                                " 缩放[%.2f 宽%.2f]", scale, le.getWidth()));
+                                    }
                                 }
                                 desc = String.format(Locale.ROOT, "%.1f,%.1f,%.1f%s dead=%s valid=%s",
                                         l.getX(), l.getY(), l.getZ(), hp, e.isDead(), e.isValid())
@@ -850,7 +870,7 @@ public final class InfernalGuessCommand implements CommandExecutor, TabCompleter
                         b.cleanup();
                         sender.sendMessage(Component.text("已清场。", NamedTextColor.GREEN));
                     }, () -> sender.sendMessage(Component.text("当前没有战斗。", NamedTextColor.RED)));
-            default -> usage(sender, "/ig debug battle <start|fight|status|stop>");
+            default -> usage(sender, "/ig debug battle <start|fight|status|stop|mutual>");
         }
         return true;
     }

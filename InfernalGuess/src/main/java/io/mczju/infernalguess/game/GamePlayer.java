@@ -161,6 +161,36 @@ public final class GamePlayer {
         return result;
     }
 
+    /**
+     * ★ **平局（双方同归于尽）的资金结算：不扣资金也不加资金，ALL IN 也不出局**
+     * （用户 2026-10-13 规则）。规则本体在 {@link SettlementService#settleDraw}。
+     */
+    public SettlementService.Result settleFundsDraw(Rounding rounding, int round) {
+        var result = SettlementService.settleDraw(funds, bet, rounding);
+        this.funds = result.after();
+        // 平局不会把人打没（after == funds）⇒ 只有「结算前就已经 0 资金」才保持出局
+        if (result.eliminated() && this.alive) {
+            this.alive = false;
+            this.eliminatedAtRound = round;
+        }
+        return result;
+    }
+
+    /**
+     * ★ **平局（双方同归于尽）的终极模式结算：谁都不掉血**（用户 2026-10-13 规则）。
+     * 规则本体在 {@link SettlementService#settleUltimateDraw}。
+     */
+    public SettlementService.UltimateResult settleUltimateDraw(int round) {
+        var result = SettlementService.settleUltimateDraw(stack(), bet);
+        this.life = result.after().life();
+        this.shield = result.after().shield();
+        if (result.eliminated() && this.alive) {
+            this.alive = false;
+            this.eliminatedAtRound = round;
+        }
+        return result;
+    }
+
     /** 出局发生在第几回合（0 = 未出局）。 */
     public int eliminatedAtRound() {
         return eliminatedAtRound;

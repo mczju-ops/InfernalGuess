@@ -105,6 +105,45 @@ public final class SettlementService {
         return new Result(funds, stake, 2L * stake, after, true, false, false, 0);
     }
 
+    // ================= 平局（同归于尽，用户 2026-10-13 规则） =================
+
+    /**
+     * ★ **平局（双方同归于尽）的资金结算：不扣资金、也不加资金**（用户 2026-10-13 规则）。
+     *
+     * <h2>语义</h2>
+     * 平局意味着「没人押中」，但用户明确要求：
+     * <pre>
+     *   资金模式：所有人不扣资金也不加资金，all in 的人不会死亡
+     * </pre>
+     * 实现上非常简单 —— **本金在结算前根本没被扣走过**（{@link #settle} 的
+     * {@code before} 就是玩家当前资金，输赢都在这一刻才算账）⇒ 只要令
+     * {@code after == funds}、不发斩杀奖励、不判出局即可。
+     *
+     * <p>★ 为什么 `eliminated` 只取「结算前就已经没钱」：`ALL IN` 的人**不因平局出局**
+     * 是本规则的要点（正常输掉 ALL IN 会 {@code after <= 0} ⇒ 出局）。
+     *
+     * @param funds    结算前资金
+     * @param bet      本回合下注（观望也走这里，原样返回）
+     * @param rounding 押注额取整方式（只用于把「本回合押了多少」打进日志）
+     */
+    public static Result settleDraw(long funds, Bet bet, Rounding rounding) {
+        if (funds < 0) {
+            throw new IllegalArgumentException("资金不能为负：" + funds);
+        }
+        long stake = bet.watch() ? 0 : bet.stake(funds, rounding);
+        return new Result(funds, stake, funds, funds, false, bet.watch(), funds == 0, 0);
+    }
+
+    /**
+     * ★ **平局（双方同归于尽）的终极模式结算：谁都不掉血**（用户 2026-10-13 规则）。
+     *
+     * <p>原话：「对决模式，所有人都不会掉血」。所以 {@code after == before}，
+     * {@code lostKind == null}，且**不因平局出局**（只有结算前就已经没命的才算已出局）。
+     */
+    public static UltimateResult settleUltimateDraw(Stack before, Bet bet) {
+        return new UltimateResult(before, before, false, bet.watch(), null, before.dead());
+    }
+
     // ================= 终极模式（无资金概念，Q48） =================
 
     /** 终极模式的「生命 + 护盾」。 */

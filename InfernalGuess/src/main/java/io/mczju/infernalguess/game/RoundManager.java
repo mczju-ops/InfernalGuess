@@ -4,6 +4,7 @@ import io.mczju.infernalguess.InfernalGuessPlugin;
 import io.mczju.infernalguess.battle.BattleService;
 import io.mczju.infernalguess.battle.BattleSide;
 import io.mczju.infernalguess.battle.BattleTracker;
+import io.mczju.infernalguess.battle.MutualDeathRule;
 import io.mczju.infernalguess.betting.Bet;
 import io.mczju.infernalguess.betting.SettlementService;
 import io.mczju.infernalguess.config.ArenaConfig;
@@ -467,10 +468,17 @@ public final class RoundManager {
      * 但**两边同时归零**时 {@code decideWinner()} 返回 {@code null} ——
      * 那一分支原本无人处理，于是回合只能干等到 {@code maxFightSeconds} 兜底超时。
      *
-     * <h2>判据</h2>
-     * 复用超时那套 {@code BattleTracker.judgeOnTimeout(...)}（同一份被测过的逻辑），
-     * 保证「同归于尽」与「超时」两种结局的裁决口径**完全一致**；
-     * 真平局时同样用**本局种子派生**的硬币决定，可复现、不偏袒任何一方。
+     * <h2>★ 裁决规则（用户 2026-10-13 新规则，见 {@link MutualDeathRule}）</h2>
+     * <ol>
+     *   <li><b>最后一次击杀由苦力怕造成</b>（苦力怕与敌人同归于尽）⇒ **算苦力怕那一方赢**；</li>
+     *   <li><b>否则是真平局</b>：
+     *       <ul>
+     *         <li>资金模式：所有人**不扣资金也不加资金**，{@code ALL IN} 的人也**不会出局**；</li>
+     *         <li>对决模式：所有人**都不掉血**。</li>
+     *       </ul></li>
+     * </ol>
+     * 注意这与**超时**不同：超时仍走 {@code BattleTracker.judgeOnTimeout(...)}
+     * （先比存活数、再比总血量、最后种子硬币），那条规则没变。
      */
     private void endIfEveryoneDead() {
         if (mutualDeathResolved || phase != RoundPhase.FIGHTING || stopped
@@ -484,20 +492,52 @@ public final class RoundManager {
         }
         double lh = battle.tracker().countedHealth(BattleSide.LEFT, this::healthOf);
         double rh = battle.tracker().countedHealth(BattleSide.RIGHT, this::healthOf);
-        boolean coin = root.derive(RunPlanner.saltForRound(round) + 424_242L).chance(0.5);
-        BattleSide w = BattleTracker.judgeOnTimeout(lc, rc, lh, rh, coin);
         mutualDeathResolved = true;
-        plugin.getLogger().warning("[IG] 双方同归于尽（同时归零）→ 立刻裁决 " + w.id()
-                + " ｜ 剩余总血量 左 " + String.format(Locale.ROOT, "%.1f", lh)
-                + " / 右 " + String.format(Locale.ROOT, "%.1f", rh)
-                + "（不再干等到超时）");
-        onWinnerDecided(w);
+
+        // ★ 同归于尽的裁决：只有「最后一击是苦力怕」才算它赢，否则真平局
+        var lastKill = battle.lastKill();
+        var creeperWinner = MutualDeathRule.winner(
+                lastKill == null ? null : lastKill.killerSide(),
+                lastKill == null ? null : lastKill.killerType());
+        String hpText = "｜剩余总血量 左 " + String.format(Locale.ROOT, "%.1f", lh)
+                + " / 右 " + String.format(Locale.ROOT, "%.1f", rh);
+        if (creeperWinner.isPresent()) {
+            plugin.getLogger().warning("[IG] 双方同归于尽 → 最后一次击杀由苦力怕造成（"
+                    + (lastKill == null ? "?" : lastKill.killerName()) + "，"
+                    + creeperWinner.get().id() + " 方）⇒ 判 " + creeperWinner.get().id() + " 胜 " + hpText);
+            onWinnerDecided(creeperWinner.get());
+        } else {
+            plugin.getLogger().warning("[IG] 双方同归于尽 → 真平局（最后一次击杀"
+                    + (lastKill == null ? "无可归因（环境伤害）" : "由 " + lastKill.killerName() + " 造成，非苦力怕）")
+                    + " ⇒ 资金模式不扣不加/不判出局，对决模式不掉血 " + hpText);
+            onDrawDecided();
+        }
     }
 
     /** 实体 UUID → 当前血量（已卸载按 0 计）。 */
     private double healthOf(java.util.UUID uuid) {
         var e = plugin.getServer().getEntity(uuid);
         return e instanceof org.bukkit.entity.LivingEntity le ? le.getHealth() : 0.0;
+    }
+
+    /**
+     * **仅供调试**：立刻把本回合所有单位打死，并马上走一次「同归于尽」判定。
+     *
+     * <p>用途：实机核对 `真平局` 与 `苦力怕判胜` 两条分支 —— 它们都要靠**全场同时死亡**触发，
+     * 自然发生是运气事件（毒雾同时带走双方），没法稳定复现。
+     * 这里只杀**本插件接管的单位**（按 UUID，铁律 10 允许），且必须在 {@code FIGHTING} 阶段。
+     *
+     * @return 是否真的触发了判定（false = 当前不在战斗中）
+     */
+    public boolean forceMutualDeathForDebug() {
+        if (phase != RoundPhase.FIGHTING || battle == null || battle.isCleaned()) {
+            return false;
+        }
+        int killed = battle.killAllTrackedForDebug();
+        plugin.getLogger().warning("[IG] 【调试】强制全场同时死亡（打死 " + killed
+                + " 个单位）→ 走同归于尽判定");
+        endIfEveryoneDead();
+        return true;
     }
 
     // ================= 结算 =================
@@ -544,8 +584,59 @@ public final class RoundManager {
 
         phase = RoundPhase.EFFECT;
         refreshBoards();
-        // 让烟花/发光播完再清场（延迟 = 配置的清场延迟 + 演出时间）
-        int delay = cfg.cleanupDelayTicks() + 60;
+        finishRoundAndAdvance();
+    }
+
+    /**
+     * ★ **平局（双方同归于尽、且最后一击不是苦力怕）**的收尾（用户 2026-10-13 规则）。
+     *
+     * <pre>
+     *   ① 资金模式：所有人不扣资金也不加资金，all in 的人不会死亡
+     *   ② 对决模式：所有人都不会掉血
+     * </pre>
+     *
+     * <p>与 {@link #onWinnerDecided} 的区别只在结算那一步：
+     * 胜负演出不播（没有胜方）、{@link #lastWinner} 置空（界面/诊断显示 {@code -}），
+     * 其余（记分板刷新、延迟清场、回合推进）完全一致。
+     */
+    private void onDrawDecided() {
+        if (phase == RoundPhase.SETTLING || phase == RoundPhase.ENDED || stopped) {
+            return;
+        }
+        cancelTasks();
+        phase = RoundPhase.SETTLING;
+        lastWinner = null;
+
+        GameConfig cfg = plugin.gameConfig();
+        boolean ultimate = mode == GameMode.ULTIMATE;
+        for (GamePlayer p : players) {
+            if (!p.isAlive()) {
+                continue;
+            }
+            if (ultimate) {
+                var r = p.settleUltimateDraw(round);
+                plugin.getLogger().info("  " + p.name() + " 押 " + label(p.bet())
+                        + " → 平局（不掉血）"
+                        + " ｜ 生命 " + p.life() + " 护盾 " + p.shield()
+                        + (r.eliminated() ? " 【出局】" : ""));
+            } else {
+                var r = p.settleFundsDraw(cfg.rounding(), round);
+                plugin.getLogger().info("  " + p.name() + " 押 " + label(p.bet())
+                        + " → 平局（不扣不加）"
+                        + " ｜ 本金 " + r.stake() + " 原样保留"
+                        + " ｜ 资金 " + r.before() + " → " + r.after()
+                        + (r.eliminated() ? " 【出局】" : ""));
+            }
+        }
+
+        phase = RoundPhase.EFFECT;
+        refreshBoards();
+        finishRoundAndAdvance();
+    }
+
+    /** 回合收尾的公共尾巴：延迟清场 → 回合 +1 → 下一回合（胜负/平局两条路共用）。 */
+    private void finishRoundAndAdvance() {
+        int delay = plugin.gameConfig().cleanupDelayTicks() + 60;
         cleanupTask = plugin.getServer().getScheduler().runTaskLater(plugin, () -> guard(
                 "回合清场与推进", () -> {
                     cleanupTask = null;
@@ -630,6 +721,11 @@ public final class RoundManager {
         List<GamePlayer> winners = (mode == GameMode.ULTIMATE)
                 ? finishUltimate(ranked)
                 : finishFunds(ranked);
+
+        // ★ 1.0.1（用户需求 1）：把战绩写进玩家档案，并**立刻**刷新两个排行榜的展示实体。
+        //   为什么必须在这里：这是唯一同时拿得到「模式 / 玩家列表 / 每人最终资金 / 谁赢了」
+        //   的地方（见 dev-log 075 的调查报告）。中止的对局不走 finish()，也就不记战绩。
+        MatchStatsRecorder.record(plugin, mode, players, winners);
 
         // ★ 左下角提示（用户需求 8）：赢家 / 出局
         for (GamePlayer p : players) {

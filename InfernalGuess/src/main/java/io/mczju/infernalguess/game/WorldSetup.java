@@ -4,44 +4,144 @@ import org.bukkit.Difficulty;
 import org.bukkit.GameRule;
 import org.bukkit.World;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 
 /**
- * 对局开始时把竞技场世界调成需要的状态。
+ * 对局开始时把竞技场世界调成需要的状态，**对局结束时把改动还原**。
  *
- * <p>对应 {@code config.yml} 的 {@code world.difficulty} 与 {@code world.time-lock}。
+ * <p>对应 {@code config.yml} 的 {@code world.difficulty} / {@code world.time-lock} /
+ * {@code world.gamerules} / {@code world.restore-on-end}。
  * 全部失败都只警告、不中断开局（世界设置不是玩法必需的）。
+ *
+ * <h2>★ 为什么必须能还原（2026-10-13 安全审查的结论）</h2>
+ * 这些设置是**世界级**的，而现场 {@code arenas.yml} 里竞技场 {@code test1} 就建在
+ * <b>主世界</b>（{@code world: world}）——「只写不还」等于子插件在主世界留下永久副作用：
+ * 难度被改、{@code mobGriefing} 被关、时间被锁死。按
+ * {@code skills/mgc-subplugin-safety} 的规则，广域状态修改必须
+ * <b>记录原值 + 可选还原</b>，因此：
+ * <ul>
+ *   <li>{@link #apply} 返回 {@link Snapshot}（只记录**真的被改动**的项）</li>
+ *   <li>对局结束时由 {@code InfernalGuessGame} 调 {@link #restore}</li>
+ *   <li>{@code world.restore-on-end: false} 可关掉还原（想让它常驻时用）</li>
+ * </ul>
  */
 public final class WorldSetup {
 
     private WorldSetup() {
     }
 
-    public static void apply(World world, String difficulty, String timeLock,
-                             Map<String, Boolean> gamerules,
-                             java.util.function.Consumer<String> warn) {
-        if (world == null) {
-            return;
+    /**
+     * 应用前的世界状态快照 —— **只记录真的被本插件改动的项**。
+     *
+     * @param worldName              被改动的世界名（还原时用它取回 World）
+     * @param previousDifficulty     原难度；{@code null} = 没改难度
+     * @param previousGamerules      被改动的规则键 → 原值（键是注册表键，如 {@code mob_griefing}）
+     * @param previousTime           原世界时间；{@code null} = 没改时间
+     * @param previousDaylightCycle  原「昼夜更替」开关；{@code null} = 没改
+     */
+    public record Snapshot(String worldName,
+                           Difficulty previousDifficulty,
+                           Map<String, Boolean> previousGamerules,
+                           Long previousTime,
+                           Boolean previousDaylightCycle) {
+
+        public Snapshot {
+            previousGamerules = Collections.unmodifiableMap(new LinkedHashMap<>(previousGamerules));
         }
-        // 难度
+
+        /** 什么都没改（例如世界为 null）时的空快照。 */
+        public static final Snapshot EMPTY = new Snapshot(null, null, Map.of(), null, null);
+
+        /** 是否有需要还原的项。 */
+        public boolean isEmpty() {
+            return previousDifficulty == null && previousGamerules.isEmpty()
+                    && previousTime == null && previousDaylightCycle == null;
+        }
+    }
+
+    /** {@link #planGamerules} 的结果：{@code apply} = 要写入的，{@code previous} = 要还原的原值。 */
+    record GamerulePlan(Map<String, Boolean> apply, Map<String, Boolean> previous) {
+    }
+
+    /**
+     * 纯逻辑：算出「要写入的规则」与「需要还原的原值」。
+     *
+     * <p>规则：**只有真的会被改动**（当前值与目标值不同）的键才进 {@code previous} ——
+     * 值本来就一样的键不该在还原时被"写回去"，否则等于替别人做了一次无谓的写入
+     * （读不到的键也不记：宁可少还原，也不写错值）。
+     *
+     * @param configured 已解析成注册表键的目标值（如 {@code mob_griefing → false}）
+     * @param current    这些键**当前的实际值**（读不到的键直接不在 map 里）
+     */
+    static GamerulePlan planGamerules(Map<String, Boolean> configured, Map<String, Boolean> current) {
+        Map<String, Boolean> apply = new LinkedHashMap<>(configured);
+        Map<String, Boolean> previous = new LinkedHashMap<>();
+        for (Map.Entry<String, Boolean> e : configured.entrySet()) {
+            Boolean now = current.get(e.getKey());
+            if (now != null && !now.equals(e.getValue())) {
+                previous.put(e.getKey(), now);
+            }
+        }
+        return new GamerulePlan(apply, previous);
+    }
+
+    /**
+     * 把世界调成需要的状态，并返回**用于还原的快照**。
+     *
+     * @return 快照（世界为 {@code null} 时返回 {@link Snapshot#EMPTY}）；
+     *         调用方应在对局结束时交给 {@link #restore}
+     */
+    public static Snapshot apply(World world, String difficulty, String timeLock,
+                                 Map<String, Boolean> gamerules,
+                                 java.util.function.Consumer<String> warn) {
+        if (world == null) {
+            return Snapshot.EMPTY;
+        }
+        String worldName = world.getName();
+
+        // ---------- 难度（先记原值） ----------
+        Difficulty previousDifficulty = null;
         if (difficulty != null && !difficulty.isBlank()
                 && !difficulty.equalsIgnoreCase("none")) {
             try {
-                world.setDifficulty(Difficulty.valueOf(difficulty.toUpperCase(Locale.ROOT)));
+                Difficulty target = Difficulty.valueOf(difficulty.toUpperCase(Locale.ROOT));
+                previousDifficulty = world.getDifficulty();
+                world.setDifficulty(target);
             } catch (IllegalArgumentException e) {
                 warn.accept("未知难度 " + difficulty + "，已跳过。");
             }
         }
-        // 游戏规则
+
+        // ---------- 游戏规则（只记录**真的被改动**的那些） ----------
         // ⚠️ 这些键在 GameConfig 里是**严格校验**的，如果这里不写入就是「配置声明了却不生效」的静默空转。
-        if (gamerules != null) {
+        Map<String, Boolean> previousRules = new LinkedHashMap<>();
+        if (gamerules != null && !gamerules.isEmpty()) {
+            Map<String, Boolean> configuredResolved = new LinkedHashMap<>();
+            Map<String, GameRule<?>> ruleByKey = new LinkedHashMap<>();
             for (Map.Entry<String, Boolean> e : gamerules.entrySet()) {
                 GameRule<?> rule = resolveRule(e.getKey());
                 if (rule == null) {
                     warn.accept("未知游戏规则 `" + e.getKey() + "`，已跳过（检查 world.gamerules）。");
                     continue;
                 }
+                String key = rule.getKey().toString();
+                configuredResolved.put(key, e.getValue());
+                ruleByKey.put(key, rule);
+            }
+            Map<String, Boolean> current = new LinkedHashMap<>();
+            for (Map.Entry<String, GameRule<?>> e : ruleByKey.entrySet()) {
+                Boolean now = readBooleanRule(world, e.getValue());
+                if (now != null) {
+                    current.put(e.getKey(), now);
+                }
+            }
+            GamerulePlan plan = planGamerules(configuredResolved, current);
+            previousRules.putAll(plan.previous());
+            for (Map.Entry<String, Boolean> e : plan.apply().entrySet()) {
+                GameRule<?> rule = ruleByKey.get(e.getKey());
                 try {
                     @SuppressWarnings("unchecked")
                     GameRule<Object> typed = (GameRule<Object>) rule;
@@ -53,31 +153,101 @@ public final class WorldSetup {
                 }
             }
         }
-        // 锁时间
-        if (timeLock == null || timeLock.isBlank() || timeLock.equalsIgnoreCase("none")) {
+
+        // ---------- 锁时间（先记原值与原开关） ----------
+        Long previousTime = null;
+        Boolean previousDaylightCycle = null;
+        if (timeLock != null && !timeLock.isBlank() && !timeLock.equalsIgnoreCase("none")) {
+            try {
+                previousTime = world.getTime();
+                previousDaylightCycle = readBooleanRule(world, GameRule.DO_DAYLIGHT_CYCLE);
+                world.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false);
+                world.setTime(switch (timeLock.toLowerCase(Locale.ROOT)) {
+                    case "day" -> 1000L;
+                    case "noon" -> 6000L;
+                    case "night" -> 13000L;
+                    case "midnight" -> 18000L;
+                    default -> {
+                        warn.accept("未知时间锁 " + timeLock + "，已跳过。");
+                        yield world.getTime();
+                    }
+                });
+            } catch (Throwable t) {
+                warn.accept("设置时间锁失败：" + t);
+            }
+        }
+
+        Snapshot snapshot = new Snapshot(worldName, previousDifficulty, previousRules,
+                previousTime, previousDaylightCycle);
+        return snapshot;
+    }
+
+    /**
+     * 还原 {@link #apply} 改动过的**世界级**设置（对局结束时调用，幂等）。
+     *
+     * <p>只用快照里记录的项：没改过的项一律不碰。
+     */
+    public static void restore(World world, Snapshot snapshot,
+                               java.util.function.Consumer<String> warn) {
+        if (world == null || snapshot == null || snapshot.isEmpty()) {
             return;
         }
+        if (snapshot.previousDifficulty() != null) {
+            try {
+                world.setDifficulty(snapshot.previousDifficulty());
+            } catch (Throwable t) {
+                warn.accept("还原难度失败：" + t);
+            }
+        }
+        for (Map.Entry<String, Boolean> e : snapshot.previousGamerules().entrySet()) {
+            GameRule<?> rule = resolveRule(e.getKey());
+            if (rule == null) {
+                warn.accept("还原游戏规则 `" + e.getKey() + "` 失败：规则名无法解析");
+                continue;
+            }
+            try {
+                @SuppressWarnings("unchecked")
+                GameRule<Object> typed = (GameRule<Object>) rule;
+                world.setGameRule(typed, (Object) e.getValue());
+            } catch (Throwable t) {
+                warn.accept("还原游戏规则 `" + e.getKey() + "` 出错：" + t);
+            }
+        }
+        if (snapshot.previousDaylightCycle() != null) {
+            try {
+                world.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, snapshot.previousDaylightCycle());
+            } catch (Throwable t) {
+                warn.accept("还原昼夜更替开关失败：" + t);
+            }
+        }
+        if (snapshot.previousTime() != null) {
+            try {
+                world.setTime(snapshot.previousTime());
+            } catch (Throwable t) {
+                warn.accept("还原世界时间失败：" + t);
+            }
+        }
+    }
+
+    /** 读一条布尔型游戏规则；读不到（注册表/世界不支持）返回 {@code null}。 */
+    private static Boolean readBooleanRule(World world, GameRule<?> rule) {
+        if (world == null || rule == null) {
+            return null;
+        }
         try {
-            world.setGameRule(GameRule.DO_DAYLIGHT_CYCLE, false);
-            world.setTime(switch (timeLock.toLowerCase(Locale.ROOT)) {
-                case "day" -> 1000L;
-                case "noon" -> 6000L;
-                case "night" -> 13000L;
-                case "midnight" -> 18000L;
-                default -> {
-                    warn.accept("未知时间锁 " + timeLock + "，已跳过。");
-                    yield world.getTime();
-                }
-            });
+            @SuppressWarnings("unchecked")
+            GameRule<Object> typed = (GameRule<Object>) (GameRule<?>) rule;
+            Object v = world.getGameRuleValue(typed);
+            return v instanceof Boolean b ? b : null;
         } catch (Throwable t) {
-            warn.accept("设置时间锁失败：" + t);
+            return null;
         }
     }
 
     /** 兼容旧调用（不带 gamerules）。 */
-    public static void apply(World world, String difficulty, String timeLock,
-                             java.util.function.Consumer<String> warn) {
-        apply(world, difficulty, timeLock, Map.of(), warn);
+    public static Snapshot apply(World world, String difficulty, String timeLock,
+                                 java.util.function.Consumer<String> warn) {
+        return apply(world, difficulty, timeLock, Map.of(), warn);
     }
 
     /**
@@ -87,7 +257,7 @@ public final class WorldSetup {
      * 26.2 把一批经典 gamerule **改了注册表键**，而配置与 {@code /gamerule} 命令里
      * 大家写的仍是**经典名** → 直接按 snake_case 查注册表会**查不到**。
      *
-     * <p>实测（在测试服的 `Registry.GAME_RULE` 上把 59 个键全打出来对出来的）：
+     * <p>实测（在测试服的 {@code Registry.GAME_RULE} 上把 59 个键全打出来对出来的）：
      * <pre>
      *   doMobSpawning        → spawn_mobs
      *   doMobLoot            → mob_drops
@@ -131,6 +301,7 @@ public final class WorldSetup {
             Map.entry("snowaccumulationheight", "max_snow_accumulation_height"),
             Map.entry("globalsoundevents", "global_sound_events")
     );
+
     /**
      * 把配置里的游戏规则名解析成 {@link GameRule}。
      *

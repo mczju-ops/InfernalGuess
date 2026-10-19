@@ -182,7 +182,15 @@ public final class BattleListener implements Listener {
         return null;
     }
 
-    /** 把父体附近**还没登记**的方块怪（史莱姆 / 岩浆怪）收养进来。 */
+    /**
+     * 把父体附近**刚分裂出来**的方块怪（史莱姆 / 岩浆怪）收养进来。
+     *
+     * <h2>★ 为什么必须加「刚生成」这一条（2026-10-13 安全审查）</h2>
+     * 旧实现只看「是方块怪 + 在我 4 格内 + 还没登记」——**归属靠类型与邻近**，
+     * 于是**别人的**史莱姆（玩家养的、别的插件刷的）只要恰好在这 4 格里，
+     * 就会被收编进本局，并在清场时被当作我方单位**删掉**。
+     * 现在多一条时间条件：只有**刚刚生成**（本 tick 前后）的方块怪才算分裂体。
+     */
     private void adoptNeighbouringCubes(BattleService battle, org.bukkit.Location at, BattleSide side) {
         if (at.getWorld() == null) {
             return;
@@ -190,10 +198,24 @@ public final class BattleListener implements Listener {
         for (org.bukkit.entity.Entity e : at.getWorld().getNearbyEntities(at, SPLIT_MATCH_RADIUS,
                 SPLIT_MATCH_RADIUS, SPLIT_MATCH_RADIUS)) {
             if (e instanceof org.bukkit.entity.AbstractCubeMob cube
+                    && isFreshSpawn(cube.getTicksLived())
                     && battle.tracker().get(cube.getUniqueId()).isEmpty()) {
                 battle.tagSide(cube, side, true, java.util.List.of());
             }
         }
+    }
+
+    /**
+     * 方块怪是否**刚生成**（分裂体判定，纯函数便于离线单测）。
+     *
+     * <p>分裂子体与父体死亡在同一 tick 内产生，因此 {@code ticksLived} 极小；
+     * 给 2 tick 余量以兼容不同版本/事件先后。玩家或别的插件早就放着的史莱姆
+     * （{@code ticksLived} 很大）因此**不会被误收编**。
+     *
+     * @param ticksLived 实体的 {@code getTicksLived()}
+     */
+    static boolean isFreshSpawn(int ticksLived) {
+        return ticksLived <= 2;
     }
 
     /**
@@ -219,6 +241,57 @@ public final class BattleListener implements Listener {
         }
     }
 
+    // ---------------- 传送拦截 / 美西螈假死 ----------------
+
+    /**
+     * **拦下末影人与潜影贝的传送**（用户要求 2026-10-13）。
+     *
+     * <h2>为什么要拦</h2>
+     * 末影人（被弹射物命中 / 被注视 / 下雨）与潜影贝（受伤时）会瞬移，
+     * 结果常常是「**飘出竞技场**，双方再也打不到」—— 一局就废了。
+     *
+     * <h2>★ 为什么拦传送不会破坏「末影人免疫弹射物」</h2>
+     * 原版 {@code Enderman.hurt()} 对投射物的处理是「**瞬移 + 直接 return false**」：
+     * 「不掉血」与瞬移是否成功**无关** → 取消传送后箭**照样打不动它**，
+     * 只是它**不再飘走**。已实测确认（骨架射它：血量不掉、坐标不动）。
+     *
+     * <p>只对本插件**接管**的单位生效（{@code BY_ENTITY} 查得到），别人的末影人不动。
+     * 本事件的 from/to 与 cause：26.2 的 {@code EntityTeleportEvent} **没有 cause**
+     * （{@code javap} 实测），所以这里取消的是该实体**所有** Bukkit 可见的传送。
+     */
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onEntityTeleport(org.bukkit.event.entity.EntityTeleportEvent event) {
+        org.bukkit.entity.Entity e = event.getEntity();
+        if (!(e instanceof org.bukkit.entity.Enderman)
+                && !(e instanceof org.bukkit.entity.Shulker)) {
+            return;
+        }
+        BattleService battle = BattleService.forEntity(e.getUniqueId()).orElse(null);
+        if (battle == null) {
+            return;   // 不是我们的兵 → 一律不碰
+        }
+        event.setCancelled(true);
+        battle.recordBlockedTeleport(e);
+    }
+
+    /**
+     * **美西螈「假死复活」**的拦截点 —— 必须在伤害**生效前**取消，所以用 {@code HIGHEST}
+     * （晚于同阵营免伤与词条派发，确保是「最后一道闸」）。
+     *
+     * <p>判定与状态都在 {@link BattleService#handleAxolotlDamage}，这里只做转发。
+     */
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onAxolotlPlayDead(org.bukkit.event.entity.EntityDamageEvent event) {
+        if (!(event.getEntity() instanceof LivingEntity victim)) {
+            return;
+        }
+        BattleService battle = BattleService.forEntity(victim.getUniqueId()).orElse(null);
+        if (battle == null) {
+            return;
+        }
+        battle.handleAxolotlDamage(victim, event);
+    }
+
     // ---------------- 死亡 / 伤害 ----------------
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -232,6 +305,12 @@ public final class BattleListener implements Listener {
                 io.mczju.infernalguess.affix.AffixRegistry.resolveAttacker(
                         event.getEntity().getKiller()),
                 event);
+        // ★ 记「最后一次敌方击杀」——同归于尽时的裁决要用（用户 2026-10-13 规则：
+        //   最后一击由苦力怕造成 ⇒ 苦力怕那一方赢）。必须在 handleDeath 之前，
+        //   因为那一刻实体还带着 getLastDamageCause()。
+        if (event.getEntity() instanceof LivingEntity victim) {
+            battle.get().recordKill(victim);
+        }
         battle.get().handleDeath(event.getEntity().getUniqueId());
         event.getDrops().clear();
         event.setDroppedExp(0);

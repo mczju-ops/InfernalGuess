@@ -34,6 +34,13 @@ public final class InfernalGuessGame extends AbstractGame {
     /** 清理幂等保护：{@code abortGame} 与 {@code endGame} 都可能走到清理。 */
     private volatile boolean cleanedUp = false;
 
+    /**
+     * 本局 {@link WorldSetup#apply} 返回的**世界设置快照**（对局结束时还原用）。
+     *
+     * <p>改动的是世界级设置（难度 / 游戏规则 / 时间），必须能还原 —— 竞技场常常就在主世界。
+     */
+    private volatile WorldSetup.Snapshot worldSnapshot;
+
     @Override
     public String getId() {
         return ID;
@@ -60,6 +67,10 @@ public final class InfernalGuessGame extends AbstractGame {
      *
      * <p>同时记录玩家**入局前的位置**，作为局末回程的回退链第三环
      * （房间没配 return/wait 时不至于把玩家丢在主世界出生点）。
+     *
+     * <p>★ 2026-10-13 追加：这里同时负责**开局人数门槛**（见 {@link StartGate}）——
+     * 因为 MGC 的 {@code tryStart()} 对人数不足**只 warn、不清房间**，
+     * 正是用户要的行为（「只会弹警告，不会清空等待房间」）；我们只需把**判据**换掉。
      */
     @Override
     public GameWaitStrategy getGameWaitStrategy() {
@@ -87,6 +98,30 @@ public final class InfernalGuessGame extends AbstractGame {
                     });
                 }
                 return ok;
+            }
+
+            /**
+             * ★ 开局判据 = {@link StartGate}（真人 2 名，**或**电脑玩家 &gt; 0）。
+             *
+             * <p>人数不够时**只警告**：不调 {@code startGame()}、也不调 {@code cancelGame()}
+             * ⇒ 玩家留在等待房间里，可以继续等人、或用 {@code /ig mode bots <数量>} 临时开电脑玩家。
+             *
+             * <p>为什么这个覆写点是对的：MGC 里触发开局的入口（{@code MGCCommand} 的开始按钮、
+             * 房间满员自动开）最终都走到 {@code GameWaitStrategy.tryStart()} /
+             * {@code startGame()}，而 {@code AbstractGame#getGameWaitStrategy()} 是
+             * **子插件必须实现的抽象方法** ⇒ 这里是唯一权威的入口。
+             */
+            @Override
+            public void tryStart() {
+                GameConfig c = plugin().gameConfig();
+                int humans = getPlayers().size();
+                if (!StartGate.canStart(humans, c.botEnabled(), c.botCount())) {
+                    sender().warn(StartGate.blockedMessage(humans, c.botEnabled(), c.botCount()));
+                    plugin().getLogger().info("[IG] 开局被拦下（房间保留）：真人 " + humans
+                            + " 名，电脑玩家 enabled=" + c.botEnabled() + " count=" + c.botCount());
+                    return;
+                }
+                super.tryStart();
             }
         };
     }
@@ -144,18 +179,55 @@ public final class InfernalGuessGame extends AbstractGame {
         var cfg = plug.gameConfig();
         var arenas = plug.arenaConfig();
 
+        // ---------- -1. ★ 先清掉「上一场没清干净」的战斗 ----------
+        //   症状（用户 2026-10-13 报「使用菜单后开局没反应 / 有清不掉的实体」）：
+        //   如果上一场战斗没走 `cleanup()`（典型：调试开了 `ig debug battle start` 后忘了
+        //   `stop`；或对局被异常方式结束），`BattleService.current` 仍指着它，
+        //   于是本局第一次 `battle.prepare()` 会抛「已有一场战斗在进行」⇒ 开局失败 ⇒
+        //   `abortViaManager` 释放房间 ⇒ 玩家看到的就是「点了开始没反应」。
+        //   ★ 判据放在这里最准：此刻**还没有本局的 RoundManager**（activeRound 为空），
+        //     `current` 里残留的必然是上一场的。有对局真在跑时不会走到这里（房间是 IN_GAME）。
+        io.mczju.infernalguess.battle.BattleService.current().ifPresent(stale -> {
+            if (!stale.isCleaned()) {
+                plug.getLogger().warning("[IG] 开局前发现上一场战斗没清干净（第 "
+                        + stale.round() + " 回合）→ 先强制清理，再开新对局");
+                stale.cleanup();
+            }
+        });
+
+        // ---------- 0. ★ 开局门槛（1.0.1 用户规则）----------
+        //   「现在不可以单人开局，游戏开始时至少需要满足以下条件之一：
+        //     有 2 名玩家；开启电脑玩家。」
+        //
+        //   为什么写在这里、而不是把 MGC 的 `min-players` 改成 2：
+        //   MGC 只数**真人**（人机是我们在 SessionPlanner 里按 bot 配置补进去的，
+        //   占的是真实名额），所以「1 真人 + N 人机」在 MGC 眼里永远是 1 人 ——
+        //   min-players=2 会把「开了电脑玩家的单人局」一起拦掉。
+        //   判据本身在 StartGate（纯函数 + 单测）。
+        //
+        //   ★ 2026-10-13 起：**正常路径根本走不到这里** ——
+        //   `getGameWaitStrategy().tryStart()` 会先用同一条判据拦下并**只警告**
+        //   （房间保留，见那边的注释）。这里保留为**兜底**：万一有别的路径把对局
+        //   启动了（例如房间 max-players 被配成 1、玩家一进房就"满员"自动开），
+        //   1 真人 0 人机的对局是**没法打的**（没有对手、没有兵），只能中止。
+        int humanCount = getPlayers().size();
+        if (!StartGate.canStart(humanCount, cfg.botEnabled(), cfg.botCount())) {
+            throw new IllegalStateException(
+                    StartGate.blockedMessage(humanCount, cfg.botEnabled(), cfg.botCount()));
+        }
+
         // ---------- 1+3. 选竞技场 + 组参与者（纯逻辑，见 SessionPlanner，有单元测试覆盖）----------
         // 本局种子先生成，因为它同时决定「随机挑哪个竞技场」与整个剧本
         long seed = new java.util.Random().nextLong();
-        String roomArenaName = getGameRoom() instanceof InfernalGuessRoom room
-                ? room.arenaName : null;
+        // ⚠️ 1.0.1 起**不再把房间的 arenaName 传进去**：用户要求「多竞技场时随机」，
+        //    而房间优先会让「房间↔竞技场一对一」的配置退化成固定顺序（见 SessionPlanner.selectArena）。
         var realPlayers = new java.util.ArrayList<SessionPlanner.Participant>();
         for (var pe : getPlayers()) {
             realPlayers.add(new SessionPlanner.Participant(
                     pe.getUniqueId(), pe.getName(), false));
         }
         SessionPlanner.SessionPlan plan = SessionPlanner.plan(
-                arenas, cfg, roomArenaName, realPlayers, seed);
+                arenas, cfg, realPlayers, seed);
         ArenaConfig.Arena arena = plan.arena();
         java.util.List<GamePlayer> players = plan.players();
 
@@ -169,7 +241,10 @@ public final class InfernalGuessGame extends AbstractGame {
                 + players.stream().filter(GamePlayer::isBot).count() + "）");
 
         // ---------- 2. 世界设置 ----------
-        WorldSetup.apply(world, cfg.worldDifficulty(), cfg.timeLock(), cfg.gamerules(),
+        // ★ 返回值是「应用前的世界状态快照」—— 对局结束时必须还原（见 cleanup）。
+        //   这些设置是**世界级**的，而竞技场常常就在主世界（现场实测），
+        //   只写不还 = 子插件在主世界留下永久副作用。
+        worldSnapshot = WorldSetup.apply(world, cfg.worldDifficulty(), cfg.timeLock(), cfg.gamerules(),
                 w -> logger.warn("[IG] " + w));
 
         // ---------- 4. 传送 + 发下注器 + 建记分板 ----------
@@ -317,10 +392,41 @@ public final class InfernalGuessGame extends AbstractGame {
         }
         cleanedUp = true;
         logger.info("[IG] 对局清理（" + reason + "）");
+        // ★ 还原对局期间改动过的**世界级**设置（难度 / 游戏规则 / 时间）
+        //   与「清场范围」同一个安全思路：子插件不得在世界层面留下永久副作用。
+        //   可用 config.yml 的 world.restore-on-end=false 关掉（想让它常驻时）。
+        restoreWorldSetup();
         // 局末位置记录只在**本局**有意义，留着会让复用房间的下一局用错兜底位置
         joinLocations.clear();
         // 阶段 6 接入：清场、回收下注器
         // 阶段 7 接入：资金结算与排行
+    }
+
+    /**
+     * 还原本局改动过的世界级设置（幂等）。
+     *
+     * <p>只用 {@link WorldSetup#apply} 返回的快照：**没改过的项一律不碰**。
+     * 关掉还原（{@code world.restore-on-end: false}）时只打一行日志说明保留了什么，
+     * 不做静默行为。
+     */
+    private void restoreWorldSetup() {
+        WorldSetup.Snapshot snap = worldSnapshot;
+        worldSnapshot = null;
+        if (snap == null || snap.isEmpty()) {
+            return;
+        }
+        if (!plugin().gameConfig().worldRestoreOnEnd()) {
+            logger.info("[IG] world.restore-on-end=false → 保留本局写入的世界设置（不还原）");
+            return;
+        }
+        org.bukkit.World w = snap.worldName() == null
+                ? null : org.bukkit.Bukkit.getWorld(snap.worldName());
+        if (w == null) {
+            logger.warn("[IG] 世界设置无法还原：世界 " + snap.worldName() + " 未加载");
+            return;
+        }
+        logger.info("[IG] 还原对局期间改动过的世界设置（难度 / 游戏规则 / 时间）");
+        WorldSetup.restore(w, snap, msg -> logger.warn("[IG] " + msg));
     }
 
     /** 本局是否已清理。 */

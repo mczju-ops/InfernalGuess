@@ -337,7 +337,6 @@ mob-items:
   husk:                ROTTEN_FLESH
   zombie_villager:     ROTTEN_FLESH
   drowned:             ROTTEN_FLESH
-  drowned_trident:     TRIDENT
   stray:               ARROW
   bogged:              ARROW
   parched:             ARROW
@@ -365,7 +364,6 @@ mob-items:
   zombified_piglin:    GOLDEN_SWORD
   bee:                 HONEYCOMB
   goat:                GOAT_HORN
-  llama:               HAY_BLOCK
   panda:               BAMBOO
   fox:                 SWEET_BERRIES
   turtle:              SEAGRASS
@@ -373,14 +371,10 @@ mob-items:
   hoglin:              PORKCHOP
   zoglin:              CRIMSON_FUNGUS
   axolotl:             AXOLOTL_BUCKET
-  pufferfish:          PUFFERFISH
   # ---- ★ 2026-10-12 新增：重磅选手 ----
   wither:              WITHER_SKELETON_SKULL
   warden:              SCULK_SHRIEKER
-  # ---- ★ 2026-10-12 新增：变种 ----
-  zombie_spear:        IRON_SPEAR
-  white_fox_sword:     DIAMOND_SWORD
-  zombified_piglin_spear: GOLDEN_SPEAR
+  # ---- ★ 2026-10-12 新增：形态变种（2026-10-13 删掉三条 combo 变种）----
   lightning_creeper:   FIREWORK_ROCKET
 
   # ---- ★ 骑乘组合（阶段 4）：下注界面里代表该组合的物品 ----
@@ -392,4 +386,4 @@ mob-items:
   zombie_horseman:   ROTTEN_FLESH
   desert_cavalry:    SAND
   evoker_knight:     TOTEM_OF_UNDYING
-  strider_jockey:    WARPED_FUNGUS_ON_A_STICK
+  hoglin_jockey:     GOLDEN_SPEAR

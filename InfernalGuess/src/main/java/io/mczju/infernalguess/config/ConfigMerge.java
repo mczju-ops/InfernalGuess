@@ -84,6 +84,48 @@ public final class ConfigMerge {
     }
 
     /**
+     * 删除「**出厂已经退役**」的整组（仅用于**内容文件**）。
+     *
+     * <h2>为什么必须有它（2026-10-13 实机踩到）</h2>
+     * {@link #pruneObsolete} 有一条**刻意的安全边界**：
+     * 「所属顶层对象不在出厂文件里 → 一律保留」（为了不误删玩家自己加的怪组）。
+     * 但这条边界同时意味着 **「出厂删掉的整组」在磁盘上会永远活着**：
+     * 用户 1.0.1 要求删掉河豚 / 普通羊驼 / 白狐狸 / 三个 combo 变种，
+     * 仓库里删干净了、离线测试也全绿，可测试服启动后 `mob-groups.yml` 里
+     * {@code pufferfish} 仍在 ⇒ **游戏里照样刷河豚**。
+     * 实测证据：2026-10-13 19:22 的启动日志里，第 1 回合抽到的还是已删除的
+     * {@code drowned_trident}（见 dev-log 075）。
+     *
+     * <p>所以退役组必须**显式登记**：出厂文件顶层的 {@code retired-groups:}
+     * 就是这份名单，迁移时按它删掉现场残留，既不会误删玩家自造组，
+     * 也不会让「删掉的怪」复活。
+     *
+     * @param disk       现场配置
+     * @param rootPath   组所在的根路径（{@code mob_groups}）
+     * @param retiredIds 退役组 id（不含根路径）
+     * @return 真的被删掉的组 id（供日志打印）
+     */
+    public static List<String> pruneRetiredGroups(ConfigurationSection disk, String rootPath,
+                                                  java.util.Collection<String> retiredIds) {
+        List<String> removed = new ArrayList<>();
+        if (disk == null || rootPath == null || retiredIds == null || retiredIds.isEmpty()) {
+            return removed;
+        }
+        for (String id : retiredIds) {
+            if (id == null || id.isBlank()) {
+                continue;
+            }
+            String path = rootPath + "." + id;
+            if (disk.isSet(path)) {
+                disk.set(path, null);
+                removed.add(id);
+            }
+        }
+        java.util.Collections.sort(removed);
+        return removed;
+    }
+
+    /**
      * 「**出厂值为准**」合并 —— 用于**游戏内容文件**（{@code mob-groups.yml}）。
      *
      * <p>与 {@link #merge} 的区别：**同名键用出厂值覆盖**，而不是保留磁盘值。
