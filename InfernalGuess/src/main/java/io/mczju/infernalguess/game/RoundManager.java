@@ -1,6 +1,8 @@
 package io.mczju.infernalguess.game;
 
 import io.mczju.infernalguess.InfernalGuessPlugin;
+import io.mczju.infernalguess.achievement.AchievementCatalog;
+import io.mczju.infernalguess.achievement.AchievementService;
 import io.mczju.infernalguess.battle.BattleService;
 import io.mczju.infernalguess.battle.BattleSide;
 import io.mczju.infernalguess.battle.BattleTracker;
@@ -182,6 +184,12 @@ public final class RoundManager {
             return;
         }
         GameConfig cfg = plugin.gameConfig();
+        // ★ 成就「高端局」：对决模式推进到第 11 轮时，仍在场上的真人解锁。
+        //   提前结束（只剩一人）的对局根本走不到 11，因此不会发 —— 与字面语义一致。
+        //   放在收尾判断之前，保证「第 10 轮打完 → round=11 → 立即 finish」也能触发。
+        if (mode == GameMode.ULTIMATE) {
+            AchievementService.onUltimateReachedRound(players, round);
+        }
         long aliveCount = players.stream().filter(GamePlayer::isAlive).count();
         // 真人玩家全没了（都出局/都退出了）→ 必须收尾，否则人机/场地会一直被占着
         // （用户反馈 6：只剩人机时不结束，占着场地）
@@ -221,6 +229,10 @@ public final class RoundManager {
         RoundPlan plan = RunPlanner.planRound(roundRoot, effectiveRound, cfg,
                 plugin.mobGroupConfig(), plugin.mobGroupConfig().ids());
         currentPlan = plan;   // 供下注界面展示阵容与词条
+        // ★ 图鉴：本回合双方出现的怪组 = 本局所有真人「遭遇过」。
+        //   记账点是「剧本生成」，不是「怪物真正生成」—— 两者之间只隔几 tick，
+        //   且调用方已经在 PREPARING 阶段，语义上就是「这轮要打这些」。
+        io.mczju.infernalguess.codex.CodexProgress.markPlanForAll(plugin, plan, players);
 
         battle = new BattleService(plugin);
         battle.setWinnerListener(this::onWinnerDecided);
@@ -554,6 +566,12 @@ public final class RoundManager {
         boolean ultimate = mode == GameMode.ULTIMATE;
         boolean shieldActive = !cfg.shieldGoneAtRound(round);
         long killLine = cfg.killLineForRound(round);
+        // 本配置下资金模式的理论上限（10 回合全 ALL IN 且全对）——「土块！」用
+        final long maxFunds = AchievementCatalog.maxBasicFunds(cfg);
+        // ★ 成就「豪情在天」：在结算**改资金/生命之前**判，押注和胜方都还在。
+        if (ultimate) {
+            AchievementService.onUltimateRound(players, winner);
+        }
 
         for (GamePlayer p : players) {
             if (!p.isAlive()) {
@@ -575,6 +593,8 @@ public final class RoundManager {
                         + (r.killLineBonus() > 0 ? " 斩杀奖励 " + r.killLineBonus() : "")
                         + " ｜ 资金 " + r.after()
                         + (r.eliminated() ? " 【出局】" : ""));
+                // ★ 成就「土块！」「老实赚钱」：结算后立刻判（此时资金/连败计数都是最新）
+                AchievementService.onBasicSettled(p, r, maxFunds);
             }
             // ★ 刚出局的玩家，左下角立刻给一条提示（用户需求 8）
             if (wasAlive && !p.isAlive()) {
@@ -726,6 +746,10 @@ public final class RoundManager {
         //   为什么必须在这里：这是唯一同时拿得到「模式 / 玩家列表 / 每人最终资金 / 谁赢了」
         //   的地方（见 dev-log 075 的调查报告）。中止的对局不走 finish()，也就不记战绩。
         MatchStatsRecorder.record(plugin, mode, players, winners);
+
+        // ★ 1.1 成就：观者 / 赌神 / 土块兜底。
+        //   必须在 record 之后 —— 「赌神」读的是刚写入的 basicWins + ultimateWins。
+        AchievementService.onMatchFinished(mode, players, winners, AchievementCatalog.maxBasicFunds(cfg));
 
         // ★ 左下角提示（用户需求 8）：赢家 / 出局
         for (GamePlayer p : players) {

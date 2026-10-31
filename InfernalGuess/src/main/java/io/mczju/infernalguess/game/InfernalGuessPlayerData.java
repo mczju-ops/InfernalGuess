@@ -66,8 +66,84 @@ public final class InfernalGuessPlayerData extends JsonPlayerData {
      */
     public long basicBestFunds;
 
+    // ---------------- 1.1 成就 / 图鉴 ----------------
+
+    /**
+     * ★ 成就「老实赚钱，很枯燥吧？」的**连续 ALL IN 输光次数**。
+     *
+     * <p>口径见 `docs/17` §1.3.2：
+     * <ul>
+     *   <li>资金模式 ALL IN 输光 → +1；</li>
+     *   <li>资金模式 ALL IN 获胜 → 清零（这是「连续」的断点）；</li>
+     *   <li>非 ALL IN 的下注不改变它。</li>
+     * </ul>
+     *
+     * <p>必须**跨局持久化** —— 一局里 ALL IN 输一次就出局了，
+     * 不可能在同一局内累计 10 次。
+     */
+    public int basicAllInBustStreak;
+
+    /**
+     * ★ 图鉴：**遭遇过**的怪组 id（账号级）。
+     *
+     * <p>记账点只有一处：每回合生成剧本后，把双方阵容里的全部怪组 id
+     * 写给本局所有真人（见 `CodexProgress.markPlanForAll`）。
+     * 幂等、跨局持久化；图鉴据此决定「已遭遇 / ？？？」。
+     */
+    public List<String> metMobs = new ArrayList<>();
+
     /** 已解锁的额外内容 id（预留，当前无用途）。 */
     public List<String> unlocks = new ArrayList<>();
+
+    /**
+     * 记一次资金模式 ALL IN 的结算结果（成就「老实赚钱」用）。
+     *
+     * @param won 本次 ALL IN 是否押中
+     * @return 结算后的连续输光次数（ALL IN 获胜时为 0）
+     */
+    public int recordBasicAllInResult(boolean won) {
+        if (won) {
+            if (basicAllInBustStreak != 0) {
+                basicAllInBustStreak = 0;
+                setModified(true);
+            }
+            return 0;
+        }
+        basicAllInBustStreak++;
+        setModified(true);
+        return basicAllInBustStreak;
+    }
+
+    /**
+     * 记一批「遭遇过」的怪组 id（幂等）。
+     *
+     * @return 本次新增的条数（0 = 全都见过，不落盘）
+     */
+    public int markMetMobs(java.util.Collection<String> groupIds) {
+        if (groupIds == null || groupIds.isEmpty()) {
+            return 0;
+        }
+        if (metMobs == null) {   // 老档案/反序列化可能给 null
+            metMobs = new ArrayList<>();
+        }
+        int added = 0;
+        for (String id : groupIds) {
+            if (id == null || id.isBlank() || metMobs.contains(id)) {
+                continue;
+            }
+            metMobs.add(id);
+            added++;
+        }
+        if (added > 0) {
+            setModified(true);
+        }
+        return added;
+    }
+
+    /** 图鉴已收录的怪组数（防御 null/重复）。 */
+    public int metMobCount() {
+        return metMobs == null ? 0 : new java.util.LinkedHashSet<>(metMobs).size();
+    }
 
     // ---------------- 写入封装（全部强制 setModified）----------------
 

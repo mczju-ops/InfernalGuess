@@ -35,6 +35,17 @@ public final class GamePlayer {
     /** 出局发生在第几回合（0 = 未出局）。终极模式用来给「都出局」的人排序。 */
     private int eliminatedAtRound;
 
+    /**
+     * ★ **本局是否只选择过「观望」**（1.1 成就「！？观者？！」用）。
+     *
+     * <p>语义：整局从未选过任何一边。超时未下注按观望处理、不改变本标志；
+     * 只要 `setBet` 收到过一次非观望的下注，就永久置 false（改回观望也不会恢复）。
+     *
+     * <p>它是**本局状态**，不是账号状态 —— 所以放在 {@link GamePlayer} 里，
+     * 由每局新构造的实例天然重置。
+     */
+    private boolean onlyWatched = true;
+
     public GamePlayer(UUID uuid, String name, boolean bot, GameMode mode,
                       long initialFunds, int initialLife, int initialShield) {
         this.uuid = uuid;
@@ -98,6 +109,11 @@ public final class GamePlayer {
         return betLocked;
     }
 
+    /** 本局是否**只选择过观望**（从未下过任何一边）。 */
+    public boolean onlyWatched() {
+        return onlyWatched;
+    }
+
     public SettlementService.Stack stack() {
         return new SettlementService.Stack(life, shield);
     }
@@ -109,6 +125,11 @@ public final class GamePlayer {
             return;
         }
         this.bet = bet;
+        // ★ 成就「！？观者？！」：只要选过一次边，本局就不再是「只观望」。
+        //   改回观望、或下一回合重新下注，都不会把标志恢复成 true。
+        if (bet != null && !bet.watch()) {
+            this.onlyWatched = false;
+        }
     }
 
     public void lockBet() {

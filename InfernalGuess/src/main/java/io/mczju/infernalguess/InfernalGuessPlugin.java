@@ -89,8 +89,12 @@ public final class InfernalGuessPlugin extends JavaPlugin {
 
         registerWithMgc();
         registerLeaderboards();
+        registerCodexMenus();
 
-        getLogger().info("InfernalGuess 已启用（回合流程 / 下注结算 / 记分板已接入）");
+        // ★ 1.1 成就：必须在 registerWithMgc() 之后（MGC 要求先 registerGame）。
+        io.mczju.infernalguess.achievement.AchievementService.load(this);
+
+        getLogger().info("InfernalGuess 已启用（回合流程 / 下注结算 / 记分板 / 成就 / 图鉴已接入）");
     }
 
     /**
@@ -199,8 +203,32 @@ public final class InfernalGuessPlugin extends JavaPlugin {
         return null;
     }
 
+    /**
+     * 注册图鉴的三个菜单（1.1 用户需求 4）。
+     *
+     * <p>用 MGC 的 {@code MenuFacade}（与 Maggoteers 同一套）：
+     * 玩家入口 `/ig codex` → `MenuFacade.open("infernalguess-codex", player)`。
+     *
+     * <p>注册失败**不禁用插件** —— 对局、成就、配置指令都不受影响，只是图鉴打不开。
+     */
+    private void registerCodexMenus() {
+        try {
+            com.github.mczjuops.mczjugamecore.menu.MenuFacade.registerMenu(
+                    "infernalguess-codex", io.mczju.infernalguess.menu.CodexMenu.class);
+            com.github.mczjuops.mczjugamecore.menu.MenuFacade.registerMenu(
+                    "infernalguess-codex-boss", io.mczju.infernalguess.menu.CodexBossMenu.class);
+            com.github.mczjuops.mczjugamecore.menu.MenuFacade.registerMenu(
+                    "infernalguess-codex-affix", io.mczju.infernalguess.menu.CodexAffixMenu.class);
+            getLogger().info("已注册图鉴菜单：infernalguess-codex / -boss / -affix");
+        } catch (Throwable t) {
+            getLogger().warning("注册图鉴菜单失败（图鉴不可用，但不影响对局）：" + t);
+        }
+    }
+
     @Override
     public void onDisable() {
+        // ★ 注销成就定义（MGC 的成就进度/解锁记录在存储里，不受影响）
+        io.mczju.infernalguess.achievement.AchievementService.disable();
         getLogger().info("InfernalGuess 已禁用");
     }
 
@@ -218,6 +246,8 @@ public final class InfernalGuessPlugin extends JavaPlugin {
         this.mobGroupConfig = MobGroupConfig.load(this);
         this.displayConfig = DisplayConfig.load(this);
         this.arenaConfig = ArenaConfig.load(this);
+        // 图鉴内容（可选覆盖；缺条目时由 CodexEntries 自动推导）
+        io.mczju.infernalguess.codex.CodexConfig.load(this);
     }
 
     /**
@@ -263,7 +293,7 @@ public final class InfernalGuessPlugin extends JavaPlugin {
         //   不清掉的话加载期会直接拒绝启动（这正是升级时真实踩到的坑）。
         stripLegacyAffixes();
 
-        for (String name : new String[]{"config.yml", "display.yml", "mob-groups.yml"}) {
+        for (String name : new String[]{"config.yml", "display.yml", "mob-groups.yml", "codex.yml"}) {
             try {
                 migrateOne(name);
             } catch (Exception e) {
@@ -443,6 +473,8 @@ public final class InfernalGuessPlugin extends JavaPlugin {
     /** {@code /ig debug reload}：热重载全部配置文件。校验失败时抛出，调用方负责提示。 */
     public void reloadAllConfigs() {
         loadAllConfigs();
+        // 「土块！」的描述写入了当前资金上限 → 重载后重建成就定义
+        io.mczju.infernalguess.achievement.AchievementService.reload(this);
         logSummary();
     }
 
@@ -453,6 +485,9 @@ public final class InfernalGuessPlugin extends JavaPlugin {
                 + "（已实现词条 " + affixRegistry.size() + " 个）");
         getLogger().info("怪物组校验通过：" + mobGroupConfig.size() + " 组（同一大池）");
         getLogger().info("显示配置校验通过：生物代表物品 " + displayConfig.mobItems().size() + " 项");
+        getLogger().info("图鉴内容：词条文案 " + io.mczju.infernalguess.codex.CodexConfig.get().affixes().size()
+                + " 条 / 怪物文案 " + io.mczju.infernalguess.codex.CodexConfig.get().monsters().size()
+                + " 条（怪物与词条收录范围自动跟随配置）");
         getLogger().info("竞技场配置：共 " + arenaConfig.arenas().size()
                 + " 个，其中可用 " + arenaConfig.playable().size() + " 个");
 
