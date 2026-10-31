@@ -140,6 +140,8 @@ public final class AffixRegistry {
         register(new io.mczju.infernalguess.affix.impl.MamaPlusAffix());
         // ---- 用户自有词条（★ 非炒鸡来源）----
         register(new io.mczju.infernalguess.affix.impl.PlasticAffix());
+        // ---- 1.1：照抄 Maggoteers 的「虚无」（抗性 V + 受击 10 次死亡）----
+        register(new io.mczju.infernalguess.affix.impl.VoidAffix());
     }
 
     /**
@@ -286,9 +288,10 @@ public final class AffixRegistry {
 
         long now = Bukkit.getCurrentTick();
         for (Affix affix : list) {
-            if (affix.type() != AffixType.STAT) {
-                continue;   // STAT 在装配时生效，其余类型等触发
-            }
+            // ★ 1.1 修正：`Affix#onEquip` 的接口注释本来就写着「STAT 在这里改实体/属性；
+            //   其余类型可在这里做初始化」，但旧实现只对 STAT 调用。
+            //   `void`（WARD）需要在装配时挂抗性 V，所以改为**所有类型都调**。
+            //   现有非 STAT 实现都没有覆写 onEquip（默认空实现），行为不变。
             try {
                 affix.onEquip(new AffixContext(plugin, entity, runtime, now));
             } catch (Throwable t) {

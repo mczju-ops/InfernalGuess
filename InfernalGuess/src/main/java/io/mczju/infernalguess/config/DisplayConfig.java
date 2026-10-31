@@ -85,7 +85,26 @@ public final class DisplayConfig {
             "scoreboard.life-row",
             "scoreboard.side-left",
             "scoreboard.side-right",
-            "scoreboard.side-watch"
+            "scoreboard.side-watch",
+            // 1.1 图鉴（Maggoteers 同款 UI）
+            "codex.title",
+            "codex.boss-name",
+            "codex.boss-lore",
+            "codex.affix-name",
+            "codex.affix-lore",
+            "codex.exit-name",
+            "codex.exit-lore",
+            "codex.boss-title",
+            "codex.affix-title",
+            "codex.back-name",
+            "codex.back-lore",
+            "codex.page-prev",
+            "codex.page-next",
+            "codex.page-info",
+            "codex.row-label",
+            "codex.row-lore",
+            "codex.unseen-name",
+            "codex.unseen-lore"
     );
 
     /** 代码会直接取用的图标键。 */

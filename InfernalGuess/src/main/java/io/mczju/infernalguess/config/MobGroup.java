@@ -41,7 +41,7 @@ public record MobGroup(
          *
          * <p>语义已变：旧字段 {@code affixes} 是「本组自带、按 chance 逐条掷」的清单；
          * 现在是「从全局池里**可以**抽到哪些」的白名单（池的其余部分对本组封闭）。
-         * 绝大多数组就是全池 28 条，只有命中了限制谓词的组才更窄。
+         * 绝大多数组就是全池 29 条，只有命中了限制谓词的组才更窄。
          */
         List<String> legalAffixIds,
         /** 装备槽 → 材质名（如 {@code minecraft:bow}）。空 Map = 裸装。 */

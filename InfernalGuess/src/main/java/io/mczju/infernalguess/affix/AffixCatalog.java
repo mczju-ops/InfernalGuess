@@ -34,9 +34,9 @@ import java.util.Set;
  *   <li><b>3 级 ×1.50</b>：mama+、armoured+、bullwark、berserk、storm、weakness、
  *       vexsummoner、plastic、<b>wardenwrath</b></li>
  * </ul>
- * 共 28 条 = {@link AffixRegistry#knownIds()} 的全集。
+ * 共 **29 条** = {@link AffixRegistry#knownIds()} 的全集。
  * {@code wardenwrath} 是用户列表里**漏写**的一条（它已实现且一直在用），
- * 由用户当场裁定归 3 级。
+ * 由用户当场裁定归 3 级；{@code void} 是 1.1 新增（照抄 Maggoteers），归 3 级。
  *
  * <h2>★ 多条命中时怎么算</h2>
  * 沿用既有公式（用户明确选择「乘法叠加」）：
@@ -74,7 +74,9 @@ public final class AffixCatalog {
     /** 3 级：权重 ×1.50。 */
     private static final List<String> TIER_3 = List.of(
             "mama+", "armoured+", "bullwark", "berserk", "storm",
-            "weakness", "vexsummoner", "plastic", "wardenwrath");
+            "weakness", "vexsummoner", "plastic", "wardenwrath",
+            // 1.1 新增：抗性 V + 受击 10 次必死，属于高强度
+            "void");
 
     /** 各级的**权重倍率**（用户口径：「权重变为原先的 110% / 120% / 150%」）。 */
     public static final double TIER_1_MULTIPLIER = 1.10;
@@ -254,7 +256,7 @@ public final class AffixCatalog {
         return List.copyOf(POOL.values());
     }
 
-    /** 池大小（28）。 */
+    /** 池大小（29）。 */
     public static int size() {
         return POOL.size();
     }

@@ -65,6 +65,8 @@ public final class InfernalGuessCommand implements CommandExecutor, TabCompleter
             return switch (sub) {
                 case "info" -> info(sender);
                 case "preview" -> preview(sender, args, 1);
+                case "codex" -> codex(sender);
+                case "achievements" -> achievements(sender);
                 case "menu" -> notYet(sender, "下注界面", "阶段 7");
                 case "difficulty" -> notYet(sender, "难度选择", "阶段 5");
                 case "leave" -> notYet(sender, "退出对局", "阶段 5");
@@ -83,6 +85,58 @@ public final class InfernalGuessCommand implements CommandExecutor, TabCompleter
             sender.sendMessage(Component.text("[IG] " + e.getMessage(), NamedTextColor.RED));
             return true;
         }
+    }
+
+    // ================= 1.1 图鉴 / 成就 =================
+
+    /** {@code /ig codex} —— 打开图鉴主菜单（版式完全仿照 Maggoteers）。 */
+    private boolean codex(CommandSender sender) {
+        if (!(sender instanceof Player p)) {
+            sender.sendMessage(plugin.displayConfig().render("players-only"));
+            return true;
+        }
+        try {
+            com.github.mczjuops.mczjugamecore.menu.MenuFacade.open("infernalguess-codex", p);
+        } catch (RuntimeException ex) {
+            plugin.getLogger().warning("[IG] 打开图鉴失败：" + ex);
+            sender.sendMessage(Component.text("打开图鉴失败：" + ex.getMessage(), NamedTextColor.RED));
+        }
+        return true;
+    }
+
+    /** {@code /ig achievements} —— 打开 MGC 的成就界面（按本游戏 id 过滤）。 */
+    private boolean achievements(CommandSender sender) {
+        if (!(sender instanceof Player p)) {
+            sender.sendMessage(plugin.displayConfig().render("players-only"));
+            return true;
+        }
+        if (!io.mczju.infernalguess.achievement.AchievementService.openMenu(p)) {
+            sender.sendMessage(Component.text("成就界面打不开（详见控制台）。", NamedTextColor.RED));
+        }
+        return true;
+    }
+
+    /** {@code /ig debug codex [reset]} —— 查看 / 清空图鉴遭遇记录。 */
+    private boolean codexDebug(CommandSender sender, String[] args) {
+        if (!(sender instanceof Player p)) {
+            sender.sendMessage(plugin.displayConfig().render("players-only"));
+            return true;
+        }
+        var data = io.mczju.infernalguess.codex.CodexProgress.dataOf(p);
+        if (data == null) {
+            sender.sendMessage(Component.text("读不到玩家档案（MGC 未就绪？）。", NamedTextColor.RED));
+            return true;
+        }
+        boolean reset = args.length >= 3 && args[2].equalsIgnoreCase("reset");
+        if (reset) {
+            io.mczju.infernalguess.codex.CodexProgress.reset(data);
+            sender.sendMessage(Component.text("已清空图鉴遭遇记录。", NamedTextColor.GREEN));
+            return true;
+        }
+        sender.sendMessage(Component.text("图鉴已收录 " + data.metMobCount() + " / "
+                + plugin.mobGroupConfig().size() + " 组怪物。", NamedTextColor.GRAY));
+        sender.sendMessage(Component.text("用 /ig debug codex reset 清空重测。", NamedTextColor.DARK_GRAY));
+        return true;
     }
 
     // ================= info / preview =================
@@ -438,6 +492,7 @@ public final class InfernalGuessCommand implements CommandExecutor, TabCompleter
             case "mgcstart" -> mgcStartCmd(sender);
             case "world" -> worldCmd(sender);
             case "where" -> whereCmd(sender);
+            case "codex" -> codexDebug(sender, args);
             default -> sender.sendMessage(Component.text(
                     "用法：/ig debug <reload|preview|summon|skip|set|info>", NamedTextColor.YELLOW));
         }
@@ -1529,6 +1584,8 @@ public final class InfernalGuessCommand implements CommandExecutor, TabCompleter
         sender.sendMessage(Component.text("─── InfernalGuess（斗蛐蛐）───", NamedTextColor.GOLD));
         sender.sendMessage(Component.text("/ig info                     查看配置与每回合规则", NamedTextColor.GRAY));
         sender.sendMessage(Component.text("/ig preview <seed> [round]   打印剧本", NamedTextColor.GRAY));
+        sender.sendMessage(Component.text("/ig codex                    打开图鉴（怪物 / 词条）", NamedTextColor.GRAY));
+        sender.sendMessage(Component.text("/ig achievements             打开成就界面", NamedTextColor.GRAY));
         if (sender.hasPermission("infernalguess.admin")) {
             sender.sendMessage(Component.text("── 管理 ──", NamedTextColor.GOLD));
             sender.sendMessage(Component.text("/ig arena list|create|delete|rename|select|info", NamedTextColor.GRAY));
@@ -1546,7 +1603,8 @@ public final class InfernalGuessCommand implements CommandExecutor, TabCompleter
                                                 @NotNull String label, @NotNull String[] args) {
         List<String> out = new ArrayList<>();
         if (args.length == 1) {
-            out.addAll(List.of("info", "preview", "menu", "difficulty", "leave"));
+            out.addAll(List.of("info", "preview", "codex", "achievements",
+                    "menu", "difficulty", "leave"));
             if (sender.hasPermission("infernalguess.admin")) {
                 out.addAll(List.of("arena", "debug"));
             }
@@ -1579,11 +1637,15 @@ public final class InfernalGuessCommand implements CommandExecutor, TabCompleter
         }
         if (sub.equals("debug") && sender.hasPermission("infernalguess.admin") && args.length == 2) {
             return filter(List.of("reload", "preview", "mgc", "battle", "round", "mode", "room",
-                    "where", "bet", "summon", "skip", "set", "info"), args[1]);
+                    "where", "bet", "summon", "skip", "set", "info", "codex"), args[1]);
         }
         if (sub.equals("debug") && sender.hasPermission("infernalguess.admin")
                 && args.length == 3 && args[1].equalsIgnoreCase("mode")) {
             return filter(List.of("funds", "ultimate", "bots", "affixes", "infernal", "config", "reset"), args[2]);
+        }
+        if (sub.equals("debug") && sender.hasPermission("infernalguess.admin")
+                && args.length == 3 && args[1].equalsIgnoreCase("codex")) {
+            return filter(List.of("reset"), args[2]);
         }
         return List.of();
     }
