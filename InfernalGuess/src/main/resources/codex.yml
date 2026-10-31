@@ -1,0 +1,220 @@
+# ============================================================
+#  codex.yml · 图鉴内容（Boss / 怪物 + 词条）
+# ------------------------------------------------------------
+#  本文件只放**文案**：
+#    · 词条图鉴的 name / icon / gameplay / flavor
+#    · 怪物图鉴**可选**的 gameplay / flavor 覆盖
+#
+#  ⚠️ 机制数值**不在这里**：
+#    · 怪物权重 / 装备 / 组合 / 变种 / 可抽词条数 → mob-groups.yml + AffixCatalog
+#    · 词条分级倍率 → AffixCatalog（代码里的 1.10 / 1.20 / 1.50）
+#  这样调平衡时只改一处，不会出现「图鉴里写的和实际不一致」。
+#
+#  ★ 图鉴的收录范围是**动态**的：
+#    · 怪物 = mob-groups.yml 里的全部怪组（当前 51 组）
+#    · 词条 = AffixCatalog 里的全部词条（当前 29 条）
+#  新增/删除内容时图鉴自动跟随，不需要在这里维护白名单。
+#
+#  ★ 本文件按「只增不改」升级：新版本新增的键会补进来，你改过的值保持不变。
+# ============================================================
+
+# ============================================================
+#  词条图鉴
+#    name     显示名（MiniMessage；缺省用 display.yml 的 messages.affixes.<id>）
+#    icon     图标材质（Material；缺省 PAPER）
+#    gameplay 玩法描述（一行）
+#    flavor   风味描述（一行，建议 <dark_gray>）
+# ============================================================
+affixes:
+
+  # ---------------- 1 级（权重 ×1.10）----------------
+
+  tosser:
+    name: "<yellow>投掷"
+    icon: PISTON
+    gameplay: "<gray>周期性把当前目标拉向自己。"
+    flavor: "<dark_gray>它不喜欢你站得那么远。"
+
+  mama:
+    name: "<light_purple>母体"
+    icon: EGG
+    gameplay: "<gray>挨打时有概率召唤同类幼体；每只母体只触发一次，幼体不计数。"
+    flavor: "<dark_gray>打了一个，来了一窝。"
+
+  vengeance:
+    name: "<red>复仇"
+    icon: IRON_SWORD
+    gameplay: "<gray>受到攻击时有一半概率反弹 6 点伤害。"
+    flavor: "<dark_gray>以牙还牙，以血还血。"
+
+  archer:
+    name: "<white>弓手"
+    icon: BOW
+    gameplay: "<gray>攻击时有一半概率射出一串散布的箭。"
+    flavor: "<dark_gray>它把弓弦拉得很满。"
+
+  ender:
+    name: "<dark_purple>末影"
+    icon: ENDER_PEARL
+    gameplay: "<gray>攻击后随机传送，让对手难以锁定。"
+    flavor: "<dark_gray>你看它一眼，它就不在原地了。"
+
+  poisonous:
+    name: "<green>剧毒"
+    icon: SPIDER_EYE
+    gameplay: "<gray>打它的怪会中毒 II，持续 10 秒。"
+    flavor: "<dark_gray>碰一下，就要付出代价。"
+
+  withering:
+    name: "<dark_gray>凋零"
+    icon: WITHER_ROSE
+    gameplay: "<gray>打它的怪会中凋零 II，持续 9 秒。"
+    flavor: "<dark_gray>伤口不会愈合，只会枯萎。"
+
+  quicksand:
+    name: "<yellow>流沙"
+    icon: SAND
+    gameplay: "<gray>打它的怪会缓慢 II，持续 9 秒。"
+    flavor: "<dark_gray>越挣扎，陷得越深。"
+
+  rust:
+    name: "<#8B7355>锈蚀"
+    icon: IRON_INGOT
+    gameplay: "<gray>有概率打掉对方主手武器（内部再掷 50%，扣 60 耐久）。"
+    flavor: "<dark_gray>铁会生锈，武器也会。"
+
+  # ---------------- 2 级（权重 ×1.20）----------------
+
+  armoured:
+    name: "<blue>披甲"
+    icon: DIAMOND_CHESTPLATE
+    gameplay: "<gray>穿上一整套钻石甲；不能穿甲的生物改发抗性提升 II。"
+    flavor: "<dark_gray>它显然有备而来。"
+
+  "1up":
+    name: "<light_purple>复生"
+    icon: TOTEM_OF_UNDYING
+    gameplay: "<gray>濒死时回满一次血；致命一击不拦，保证对局能结束。"
+    flavor: "<dark_gray>它已经死过一次了。"
+
+  webber:
+    name: "<white>织网"
+    icon: COBWEB
+    gameplay: "<gray>有概率在目标附近铺蛛网，小概率铺出半径 6 格的巨网。"
+    flavor: "<dark_gray>脚下忽然就黏住了。"
+
+  necromancer:
+    name: "<dark_purple>死灵"
+    icon: WITHER_SKELETON_SKULL
+    gameplay: "<gray>周期性发射一颗追踪的凋灵之首。"
+    flavor: "<dark_gray>亡者的低语从它身后传来。"
+
+  ghastly:
+    name: "<red>火球"
+    icon: FIRE_CHARGE
+    gameplay: "<gray>周期性发射一枚追踪火球。"
+    flavor: "<dark_gray>天边亮起一点不该有的火光。"
+
+  gravity:
+    name: "<light_purple>重力"
+    icon: SHULKER_SHELL
+    gameplay: "<gray>周期性让当前目标漂浮 V，持续 2 秒。"
+    flavor: "<dark_gray>它只是抬了抬手，你就飞了起来。"
+
+  sprint:
+    name: "<aqua>疾速"
+    icon: SUGAR
+    gameplay: "<gray>永久速度 I，移动速度大幅提升。"
+    flavor: "<dark_gray>你追不上它。"
+
+  firework:
+    name: "<gold>烟花"
+    icon: FIREWORK_ROCKET
+    gameplay: "<gray>攻击时有概率在目标处放烟花并引爆。"
+    flavor: "<dark_gray>最漂亮的爆炸，往往最致命。"
+
+  molten:
+    name: "<gold>熔岩"
+    icon: MAGMA_CREAM
+    gameplay: "<gray>打它的怪会被点燃 3 秒。"
+    flavor: "<dark_gray>它的血大概真的是岩浆。"
+
+  lifesteal:
+    name: "<red>吸血"
+    icon: RED_DYE
+    gameplay: "<gray>挨打后 8 秒内每秒回复 1 点生命。"
+    flavor: "<dark_gray>你打在它身上的，它都会拿回来。"
+
+  # ---------------- 3 级（权重 ×1.50）----------------
+
+  "mama+":
+    name: "<light_purple>母体+"
+    icon: EGG
+    gameplay: "<gray>挨打时一次召唤 4 只同类幼体（升级形态）。"
+    flavor: "<dark_gray>这次是一整窝。"
+
+  "armoured+":
+    name: "<blue>披甲+"
+    icon: NETHERITE_CHESTPLATE
+    gameplay: "<gray>穿上一整套下界合金甲（升级形态）。"
+    flavor: "<dark_gray>它连最后一点皮肤都不打算露出来。"
+
+  bullwark:
+    name: "<gray>壁垒"
+    icon: SHIELD
+    gameplay: "<gray>永久抗性提升 III（约 60% 减伤）。"
+    flavor: "<dark_gray>打上去像打在墙上。"
+
+  berserk:
+    name: "<dark_red>狂暴"
+    icon: IRON_AXE
+    gameplay: "<gray>攻击时自己掉血，换取目标额外受伤。"
+    flavor: "<dark_gray>它已经不在乎自己会流多少血。"
+
+  storm:
+    name: "<yellow>雷暴"
+    icon: LIGHTNING_ROD
+    gameplay: "<gray>周期性在目标头顶召唤闪电并造成 5 点伤害。"
+    flavor: "<dark_gray>云层在它头顶聚拢。"
+
+  weakness:
+    name: "<dark_gray>虚弱"
+    icon: FERMENTED_SPIDER_EYE
+    gameplay: "<gray>攻击给目标挂上虚弱，持续 25 秒。"
+    flavor: "<dark_gray>你的手臂忽然抬不起来了。"
+
+  vexsummoner:
+    name: "<dark_aqua>唤魔"
+    icon: VEX_SPAWN_EGG
+    gameplay: "<gray>挨打时有概率召唤恼鬼（附近最多 4 只）。"
+    flavor: "<dark_gray>它打个响指，空中就多了几道影子。"
+
+  plastic:
+    name: "<gold>塑料"
+    icon: SLIME_BALL
+    gameplay: "<gray>开打后获得 20 秒抗性提升 V（80% 减伤），带金色环状粒子。"
+    flavor: "<dark_gray>看起来软，打起来更软。"
+
+  wardenwrath:
+    name: "<#008080>声波"
+    icon: SCULK_SENSOR
+    gameplay: "<gray>周期性对当前目标放声波：10 点伤害 / 15 格衰减 + 击退。"
+    flavor: "<dark_gray>它听见你了。"
+
+  # ---------------- 1.1 新增（3 级）----------------
+  void:
+    name: "<light_purple>虚无"
+    icon: ENDER_EYE
+    gameplay: "<gray>初始带有抗性提升 V；受到 10 次实体伤害后直接死亡。"
+    flavor: "<dark_gray>你看得见它，却打不实它。"
+
+# ============================================================
+#  怪物图鉴（可选覆盖）
+#  gameplay 会放在自动生成的数值行之前；flavor 追加在最后。
+#  不写也能正常显示 —— 图鉴会自动生成「权重 / 实体 / 装备 / 组合 / 变种 / 可抽词条数」。
+#
+#  monsters:
+#    zombie:
+#      gameplay: "<gray>最标准的杂兵，权重基准 1.0。"
+#      flavor: "<dark_gray>它只是想要你的脑子。"
+# ============================================================

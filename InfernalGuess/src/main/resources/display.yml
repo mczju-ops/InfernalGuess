@@ -126,6 +126,8 @@ messages:
     # ---- 升级形态（原版按等级/档位变强，本项目拆成独立词条）----
     "armoured+": "<blue>披甲+"
     "mama+": "<light_purple>母体+"
+    # ---- 1.1 新增：虚无（照抄 Maggoteers：抗性 V + 受击 10 次死亡）----
+    void: "<light_purple>虚无"
 
   settle:
     round-result: "<green>✔ <white>{side}<green> 获胜！"
@@ -152,6 +154,31 @@ messages:
     betting-closed: "<gray>当前不是下注阶段。"
     eliminated: "<gray>你已出局，本局只能观战。"
     exit-title: "退出对局"
+
+  # ============================================================
+  #  1.1 图鉴（版式完全仿照 Maggoteers）
+  #  - 一级 3×9：11 = Boss（怪物）图鉴、15 = 词条图鉴、26 = 退出
+  #  - 二级 5×9：4 行 × 8 只怪物 / 21 条词条，页脚翻页 + 返回
+  # ============================================================
+  codex:
+    title: "<gold>图鉴"
+    boss-name: "<gold>Boss 图鉴"
+    boss-lore: "<gray>已收录 <white>{got}<gray> / {total} · <dark_gray>点击查看全部竞技场怪物"
+    affix-name: "<light_purple>词条图鉴"
+    affix-lore: "<gray>共 <white>{total}<gray> 条 · <dark_gray>点击查看全部词条"
+    exit-name: "<red>退出"
+    exit-lore: "<gray>关闭图鉴"
+    boss-title: "<gold>Boss 图鉴 · 竞技场怪物"
+    affix-title: "<light_purple>词条图鉴"
+    back-name: "<red>返回"
+    back-lore: "<gray>回到图鉴主菜单"
+    page-prev: "<gray>上一页"
+    page-next: "<gray>下一页"
+    page-info: "<gray>第 <white>{page}<gray> / {pages} 页"
+    row-label: "<gold>权重 {range}"
+    row-lore: "<gray>本行 <white>{count}<gray> 只 · 第 {page}/{pages} 页"
+    unseen-name: "<dark_gray>？？？"
+    unseen-lore: "<gray>尚未在竞技场遭遇"
 
   difficulty:
     current: "<aqua>当前难度：<yellow>{difficulty}"

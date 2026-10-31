@@ -38,7 +38,8 @@ weight-rounding: ROUND            # 组权重取整：FLOOR | ROUND | CEIL（四
 #   却照样参与权重加成 —— 配平因此建立在虚假强度上。且我们不是插件所属者，
 #   无法部署改动过的本体，所以这条路整体不可行。
 #
-#   现状（2026-10-12）：**自研词条系统已接入并全部实机验证**，共 28 条。
+#   现状（2026-10-12）：**自研词条系统已接入并全部实机验证**，共 29 条
+#   （2026-10-31 新增「虚无」void）。
 #
 # ---------------- ★ 词条改为「全局池 + 少量限制」（2026-10-12 用户裁定）----------------
 #   旧设计把词条清单写在 mob-groups.yml 的**每个怪组**里
@@ -58,13 +59,13 @@ weight-rounding: ROUND            # 组权重取整：FLOOR | ROUND | CEIL（四
 #   权重加成改为**统一分级**（用户原话「权重变为原先的 N%」）：
 #     1 级 ×1.10：tosser、mama、vengeance、archer、ender、poisonous、withering、quicksand、rust
 #     2 级 ×1.20：armoured、1up、webber、necromancer、ghastly、gravity、sprint、firework、molten、lifesteal
-#     3 级 ×1.50：mama+、armoured+、bullwark、berserk、storm、weakness、vexsummoner、plastic、wardenwrath
+#     3 级 ×1.50：mama+、armoured+、bullwark、berserk、storm、weakness、vexsummoner、plastic、wardenwrath、void
 #   多条命中时**乘法叠加**（沿用原公式 Π(1+加成)）：3 条 3 级 = 1.5³ = 3.375。
 enable-affixes: true
 affixes:
   # 「词条数—回合数」表：该回合一个组【最多】能命中几条词条（0 = 该回合不生成词条）。
   #
-  # ★ 抽取方式（2026-10-12 改）：从 28 条全局池里**不放回地抽 0..N 条**，
+  # ★ 抽取方式（2026-10-12 改）：从 29 条全局池里**不放回地抽 0..N 条**，
   #   **抽中即生效，不再掷 chance**（用户原话：「抽中了直接加进来」）。
   #   条数 0..N 按三角分布（偏向中间）——两端都保留概率，既不是保底也不是封顶。
   count-by-round: [0, 0, 1, 1, 1, 2, 2, 2, 3, 3]
